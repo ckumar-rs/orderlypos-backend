@@ -1,0 +1,12 @@
+{
+  "name": "orderlypos-backend",
+  "private": true,
+  "packageManager": "pnpm@11.10.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm --filter @nodedr-restaurant/types build && pnpm --filter @nodedr-restaurant/backend exec prisma generate && pnpm --filter @nodedr-restaurant/backend build",
+    "start": "pnpm --filter @nodedr-restaurant/backend start:prod"
+  }
+}

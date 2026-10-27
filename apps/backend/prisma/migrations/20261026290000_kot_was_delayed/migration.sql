@@ -1,0 +1,1 @@
+ALTER TABLE "kot_items" ADD COLUMN "wasDelayed" BOOLEAN NOT NULL DEFAULT false;

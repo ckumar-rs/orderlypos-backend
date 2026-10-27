@@ -1,0 +1,1 @@
+ALTER TABLE "modifiers" ADD COLUMN IF NOT EXISTS "imageUrl" TEXT;
