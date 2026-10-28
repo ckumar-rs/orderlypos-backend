@@ -7,6 +7,6 @@
   },
   "scripts": {
     "build": "pnpm --filter @nodedr-restaurant/types build && pnpm --filter @nodedr-restaurant/backend exec prisma generate && pnpm --filter @nodedr-restaurant/backend build",
-    "start": "pnpm --filter @nodedr-restaurant/backend start:prod"
+    "start": "pnpm --filter @nodedr-restaurant/backend exec prisma migrate deploy && pnpm --filter @nodedr-restaurant/backend start:prod"
   }
 }
