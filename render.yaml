@@ -13,6 +13,6 @@ services:
       - key: JWT_SECRET
         sync: false
       - key: CORS_ORIGIN
-        sync: false
+        value: "https://orderlypos-ui.vercel.app"
       - key: COOKIE_SECURE
         value: "true"
