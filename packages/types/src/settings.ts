@@ -24,6 +24,7 @@ export const restaurantSettingsSchema = z.object({
     .nullable(),
   upiPayeeName: z.string().trim().max(60).optional().nullable(),
   demoMode: z.boolean().optional(),
+  agentMode: z.enum(["HUMAN", "AUTO"]).optional(),
   loyaltyPointValue: z.coerce.number().min(0).optional(),
   loyaltyEarnPerCurrency: z.coerce.number().int().positive().optional(),
   referralPoints: z.coerce.number().int().min(0).max(100_000).optional(),

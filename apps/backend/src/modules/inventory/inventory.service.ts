@@ -12,6 +12,7 @@ import type {
   SetRecipeDto,
   MenuItemTrackingDto,
 } from '@nodedr-restaurant/types';
+import { agentActsAlone } from '../../common/agent-mode';
 import { PrismaService } from '../../prisma/prisma.service';
 import { round2, round3, round4 } from '../../common/money';
 import { EmailService } from '../email/email.service';
@@ -533,7 +534,9 @@ export class InventoryService {
 
   /**
    * Opens or extends one draft purchase request for ingredients at or below
-   * their reorder level. A sale is never failed if this bookkeeping fails.
+   * their reorder level. In human-in-the-loop mode the request waits for a
+   * person. In automatic mode the same lines also become a purchase order.
+   * A sale is never failed if this bookkeeping fails.
    */
   async suggestReorders(branchId: string, userId: string): Promise<number> {
     const ingredients = await this.prisma.ingredient.findMany({
@@ -587,7 +590,13 @@ export class InventoryService {
         })),
       });
     }
-    await this.placeReorder(branchId, userId, missing);
+    const restaurant = await this.prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { restaurant: { select: { agentMode: true } } },
+    });
+    if (agentActsAlone(restaurant?.restaurant.agentMode)) {
+      await this.placeReorder(branchId, userId, missing);
+    }
     return rows.length;
   }
 

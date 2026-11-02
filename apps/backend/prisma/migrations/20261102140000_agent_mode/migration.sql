@@ -1,0 +1,1 @@
+ALTER TABLE "restaurants" ADD COLUMN "agentMode" TEXT NOT NULL DEFAULT 'HUMAN';

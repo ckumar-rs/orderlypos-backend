@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
+import { agentActsAlone } from '../../common/agent-mode';
 import { EmailService } from '../email/email.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { ReportsService } from '../reports/reports.service';
@@ -575,6 +576,29 @@ export class PlatformService {
         entityId: rule.id,
       });
       return;
+    }
+    if (action === 'EMAIL' || action === 'SMS' || action === 'WHATSAPP' || action === 'WEBHOOK') {
+      const restaurant = await this.prisma.branch.findUnique({
+        where: { id: rule.branchId },
+        select: { restaurant: { select: { agentMode: true } } },
+      });
+      if (!agentActsAlone(restaurant?.restaurant.agentMode)) {
+        const target =
+          action === 'EMAIL'
+            ? rule.emailTo || owner?.email || 'the address on the rule'
+            : action === 'WEBHOOK'
+              ? rule.webhookUrl || 'the webhook on the rule'
+              : rule.phoneTo || owner?.phone || 'the number on the rule';
+        await this.prisma.automationTask.create({
+          data: {
+            branchId: rule.branchId,
+            ruleId: rule.id,
+            title: `Approve ${action.toLowerCase()}: ${rule.name}`.slice(0, 80),
+            body: `${body}\nA person sends this ${action} to ${target}.`,
+          },
+        });
+        return;
+      }
     }
     if (action === 'EMAIL') {
       const to = rule.emailTo || owner?.email;

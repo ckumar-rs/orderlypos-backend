@@ -71,6 +71,10 @@ model Restaurant {
   // here contacts an outside service.
   demoMode Boolean @default(false)
 
+  // HUMAN: agents draft and a person sends the change.
+  // AUTO: the same agents send the purchase order, the message, and the reminder.
+  agentMode String @default("HUMAN")
+
   // Loyalty program config — previously hardcoded constants in
   // OrdersService, now per-restaurant and settings-editable. Point value
   // is the currency amount 1 redeemed point is worth; earn rate is how

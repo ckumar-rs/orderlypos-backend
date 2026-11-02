@@ -510,13 +510,14 @@ export class WhatsAppCatalogService {
       take: 20,
     });
     const orderIds = rows.map((row) => row.orderId).filter((id): id is string => Boolean(id));
-    const orders = orderIds.length
-      ? await this.prisma.order.findMany({
-          where: { id: { in: orderIds } },
-          select: { id: true, orderNumber: true, status: true },
-        })
-      : [];
-    const byId = new Map(orders.map((order) => [order.id, order]));
+    const orders =
+      orderIds.length === 0
+        ? ([] as Array<{ id: string; orderNumber: string; status: string }>)
+        : await this.prisma.order.findMany({
+            where: { id: { in: orderIds } },
+            select: { id: true, orderNumber: true, status: true },
+          });
+    const byId = new Map(orders.map((order) => [order.id, order] as const));
     return rows.map((row) => ({
       messageId: row.messageId,
       submissionStatus: row.submissionStatus,

@@ -4,12 +4,13 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import type {
   CreateReservationDto,
   ReservationDepositDto,
   ReservationStatusDto,
 } from '@nodedr-restaurant/types';
+import { Cron } from '@nestjs/schedule';
+import { agentActsAlone } from '../../common/agent-mode';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
@@ -377,11 +378,11 @@ export class ReservationsService {
         status: { in: ['RESERVED', 'CONFIRMED'] },
         reservedAt: { gte: now, lte: until },
       },
-      include: { branch: { select: { restaurantId: true } } },
+      include: { branch: { select: { restaurantId: true, restaurant: { select: { agentMode: true } } } } },
       take: 40,
     });
     for (const row of due) {
-      if (!row.phone) continue;
+      if (!row.phone || !agentActsAlone(row.branch.restaurant.agentMode)) continue;
       const ready = await this.messaging.isChannelReady(row.branch.restaurantId, 'SMS');
       if (!ready) continue;
       try {
