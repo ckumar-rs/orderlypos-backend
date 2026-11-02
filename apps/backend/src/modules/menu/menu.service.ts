@@ -1,8 +1,10 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import type {
   MenuCategoryDto,
@@ -16,6 +18,7 @@ import { AuditService } from '../../audit/audit.service';
 import { localDateKey, localMinuteAndDay } from '../../common/time';
 import { BranchTimeService } from '../../common/services/branch-time.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { WhatsAppCatalogService } from '../whatsapp-catalog/whatsapp-catalog.service';
 import { toMinutes } from '../marketing/discounts';
 import { fromMinutes } from '../marketing/discounts';
 import {
@@ -35,6 +38,8 @@ export class MenuService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly time: BranchTimeService,
+    @Inject(forwardRef(() => WhatsAppCatalogService))
+    private readonly catalog: WhatsAppCatalogService,
   ) {}
 
   // --- Categories ---------------------------------------------------------
@@ -188,7 +193,7 @@ export class MenuService {
     await this.assertPriceEdit(branchId, userId);
     const { modifierGroupIds, barcode, sizes, ...rest } = dto;
     await this.assertModifierGroupsInBranch(branchId, modifierGroupIds);
-    return this.prisma.menuItem.create({
+    const created = await this.prisma.menuItem.create({
       data: {
         ...rest,
         barcode: barcode?.trim() || null,
@@ -214,6 +219,8 @@ export class MenuService {
         sizes: { orderBy: { sortOrder: 'asc' } },
       },
     });
+    await this.catalog.markDirty(created.id);
+    return created;
   }
 
   async updateItem(
@@ -270,6 +277,7 @@ export class MenuService {
     // explicitly (before → after) in addition to the raw change set —
     // everything else in `rest` (name, availability, dietary flags, ...)
     // still shows up via `changes`.
+    await this.catalog.markDirty(updated.id);
     await this.audit.record({
       userId,
       action: 'menu_item.updated',
@@ -303,6 +311,7 @@ export class MenuService {
 
   async deleteItem(branchId: string, id: string) {
     await this.getItem(branchId, id);
+    await this.catalog.retireItem(id);
     await this.prisma.menuItem.delete({ where: { id } });
     return { ok: true };
   }

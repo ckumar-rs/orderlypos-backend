@@ -13,6 +13,7 @@ import { MenuModule } from './modules/menu/menu.module';
 import { AttendanceModule } from './modules/attendance/attendance.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
 import { FoodPlatformsModule } from './modules/food-platforms/food-platforms.module';
+import { WhatsAppCatalogModule } from './modules/whatsapp-catalog/whatsapp-catalog.module';
 import { CommerceModule } from './modules/commerce/commerce.module';
 import { ServiceDepthModule } from './modules/service-depth/service-depth.module';
 import { HrModule } from './modules/hr/hr.module';
@@ -63,6 +64,7 @@ import { AgentModule } from './modules/agent/agent.module';
     AttendanceModule,
     DeliveryModule,
     FoodPlatformsModule,
+    WhatsAppCatalogModule,
     CommerceModule,
     ServiceDepthModule,
     HrModule,

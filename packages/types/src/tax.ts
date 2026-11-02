@@ -45,7 +45,7 @@ export const TAX_REGIME_PRESETS: Record<TaxRegime, TaxRegimePreset> = {
     taxLabel: "GST",
     taxIdLabel: "GSTIN",
     splitCgstSgst: true,
-    exampleRates: "5% / 12% / 18% (typical restaurant slabs)",
+    exampleRates: "5% restaurant food (SAC 9963) / 18%",
     defaultCountry: "IN",
   },
   US_SALES_TAX: {

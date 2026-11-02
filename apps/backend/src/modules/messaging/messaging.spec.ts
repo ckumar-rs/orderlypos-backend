@@ -1,5 +1,9 @@
 import {
   normalizeMsisdn,
+  whatsappCatalogMessagePayload,
+  whatsappDocumentPayload,
+  whatsappImagePayload,
+  whatsappMediaUrl,
   whatsappMessagesUrl,
   whatsappTemplatePayload,
   whatsappTextPayload,
@@ -17,6 +21,40 @@ describe('messaging urls and phones', () => {
     expect(normalizeMsisdn('+91 96186 13439', '91')).toBe('919618613439');
     expect(normalizeMsisdn('9618613439', '')).toBe('9618613439');
     expect(normalizeMsisdn('12', '91')).toBeNull();
+  });
+
+  it('builds a Cloud API image message for an uploaded UPI QR', () => {
+    expect(whatsappMediaUrl('https://graph.example.com/v21.0/', '123456')).toBe(
+      'https://graph.example.com/v21.0/123456/media',
+    );
+    expect(whatsappImagePayload('919876543210', 'media-1', 'Scan to pay')).toEqual({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: '919876543210',
+      type: 'image',
+      image: { id: 'media-1', caption: 'Scan to pay' },
+    });
+    expect(whatsappDocumentPayload('919876543210', 'media-2', 'receipt-12.pdf', 'Receipt 12')).toEqual({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: '919876543210',
+      type: 'document',
+      document: { id: 'media-2', filename: 'receipt-12.pdf', caption: 'Receipt 12' },
+    });
+  });
+
+  it('builds a Cloud API catalog message for an open customer chat', () => {
+    expect(whatsappCatalogMessagePayload('919876543210', 'Browse the menu')).toEqual({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: '919876543210',
+      type: 'interactive',
+      interactive: {
+        type: 'catalog_message',
+        body: { text: 'Browse the menu' },
+        action: { name: 'catalog_message' },
+      },
+    });
   });
 
   it('builds the official Cloud API text envelope', () => {

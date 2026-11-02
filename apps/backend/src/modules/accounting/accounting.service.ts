@@ -8,6 +8,8 @@ import { zonedRange } from '../../common/time';
 import { BranchTimeService } from '../../common/services/branch-time.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { expectedCash, gstSummary, round2 } from './accounting.calc';
+import { branchGstState } from '../../common/india-gst';
+import { gstRequirements, planGstBilling } from './gst-billing';
 import { JournalService } from './journal.service';
 import {
   parseTallyXmlResult,
@@ -321,6 +323,80 @@ export class AccountingService {
       }));
     });
     return { from, to, orders: orders.length, ...gstSummary(lines) };
+  }
+
+  async gstBilling(branchId: string, from: string, to: string) {
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { gstNumber: true, gstStateCode: true, name: true },
+    });
+    if (!branch) throw new NotFoundException('Branch not found');
+    const orders = await this.prisma.order.findMany({
+      where: {
+        branchId,
+        status: 'PAID',
+        billedAt: zonedRange(from, to, await this.time.tzForBranch(branchId)),
+      },
+      orderBy: { billedAt: 'desc' },
+      take: 500,
+      select: {
+        orderNumber: true,
+        billedAt: true,
+        guestName: true,
+        subtotal: true,
+        discountAmount: true,
+        loyaltyDiscountAmount: true,
+        customer: { select: { name: true, gstStateCode: true } },
+        items: {
+          select: { nameSnapshot: true, hsnCode: true, quantity: true, lineTotal: true, taxRateSnapshot: true },
+        },
+        refunds: { select: { amount: true, createdAt: true } },
+      },
+    });
+    const plan = planGstBilling(
+      branchGstState(branch.gstStateCode, branch.gstNumber),
+      orders.map((order) => ({
+        orderNumber: order.orderNumber,
+        billedAt: (order.billedAt ?? order.refunds[0]?.createdAt ?? new Date()).toISOString(),
+        guestName: order.guestName || order.customer?.name || null,
+        guestState: order.customer?.gstStateCode ?? null,
+        subtotal: Number(order.subtotal),
+        discountAmount: Number(order.discountAmount),
+        loyaltyDiscountAmount: Number(order.loyaltyDiscountAmount),
+        lines: order.items.map((item) => ({
+          name: item.nameSnapshot,
+          hsnCode: item.hsnCode,
+          quantity: item.quantity,
+          lineTotal: Number(item.lineTotal),
+          taxRatePercent: Number(item.taxRateSnapshot),
+        })),
+        refunds: order.refunds.map((refund) => ({
+          amount: Number(refund.amount),
+          createdAt: refund.createdAt.toISOString(),
+        })),
+      })),
+    );
+    return {
+      from,
+      to,
+      branchName: branch.name,
+      gstin: branch.gstNumber,
+      stateCode: branch.gstStateCode,
+      requirements: gstRequirements({
+        gstin: branch.gstNumber,
+        stateCode: branch.gstStateCode,
+        missingHsn: plan.missingHsn,
+        lineCount: plan.lineCount,
+      }),
+      documents: plan.documents,
+      creditNotes: plan.creditNotes,
+      hsn: plan.hsn,
+      rates: plan.rates,
+      cgst: plan.cgst,
+      sgst: plan.sgst,
+      utgst: plan.utgst,
+      igst: plan.igst,
+    };
   }
 
   /** Cross-branch snapshot for the whole restaurant. */

@@ -2,9 +2,11 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
@@ -24,6 +26,7 @@ import {
 } from '@nodedr-restaurant/types';
 import { AuditService } from '../../audit/audit.service';
 import { isSqlite, stringList } from '../../common/sqlite';
+import { branchGstState, indiaPlaceOfSupply } from '../../common/india-gst';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { GiftCardsService } from '../gift-cards/gift-cards.service';
 import { InventoryService } from '../inventory/inventory.service';
@@ -49,6 +52,7 @@ import {
 } from './settlement';
 import type { TaxMode } from '@nodedr-restaurant/types';
 import { JournalService } from '../accounting/journal.service';
+import { CatalogOrderService } from '../whatsapp-catalog/catalog-order.service';
 import { VerifactuService } from '../verifactu/verifactu.service';
 import { MenuService } from '../menu/menu.service';
 import { MessagingService } from '../messaging/messaging.service';
@@ -77,9 +81,12 @@ export class OrdersService {
     private readonly marketing: MarketingService,
     private readonly webhooks: WebhooksService,
     private readonly verifactu: VerifactuService,
-    private readonly menu: MenuService,
     private readonly messaging: MessagingService,
     private readonly journal: JournalService,
+    @Inject(forwardRef(() => MenuService))
+    private readonly menu: MenuService,
+    @Inject(forwardRef(() => CatalogOrderService))
+    private readonly catalogOrders: CatalogOrderService,
   ) {}
 
   async listOpen(branchId: string, tableId?: string) {
@@ -1532,13 +1539,10 @@ export class OrdersService {
     const birthdayDiscount = birthdayApplied
       ? round2((foodTotal * birthday.percent) / 100)
       : 0;
-    const guestState = profile?.gstStateCode?.trim().toUpperCase();
-    const branchState = branch.gstStateCode?.trim().toUpperCase();
-    const interstate = !!(
-      guestState &&
-      branchState &&
-      guestState !== branchState
-    );
+    const interstate = indiaPlaceOfSupply(
+      branchGstState(branch.gstStateCode, branch.gstNumber),
+      profile?.gstStateCode,
+    ).interstate;
     const pointsToRedeem = adj.loyaltyPointsToRedeem ?? 0;
     if (pointsToRedeem > 0 && !customerId) {
       throw new BadRequestException(
@@ -2085,6 +2089,13 @@ export class OrdersService {
           amount: Number(p.amount),
         })),
       });
+      if (updated.source === 'WHATSAPP') {
+        void this.catalogOrders.sendPaidReceipt(updated.id).catch((err) =>
+          this.logger.warn(
+            `Order ${updated.orderNumber}: receipt was not sent: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+      }
     }
     return {
       ...updated,
@@ -3715,6 +3726,10 @@ export class OrdersService {
       },
     });
     if (!order) throw new NotFoundException('Paid order not found');
+    if (channel === 'WHATSAPP') {
+      const sent = await this.catalogOrders.sendPaidReceipt(orderId).catch(() => false);
+      if (sent) return { sent: true, pdf: true };
+    }
     const lines = order.items.map(
       (item) => `${item.quantity}× ${item.nameSnapshot}  ${item.lineTotal}`,
     );

@@ -7,6 +7,7 @@ import type { Prisma, StockMovementType } from '@prisma/client';
 import type { StockAdjustmentDto } from '@nodedr-restaurant/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { round3 } from '../../common/money';
+import { utcDayStart } from './stock-batch';
 
 type Tx = Prisma.TransactionClient;
 
@@ -62,6 +63,8 @@ export class StockService {
       note?: string;
       userId: string;
       allowNegative?: boolean;
+      /** A paid sale skips batches whose expiry date is before today. */
+      skipExpired?: boolean;
       orderId?: string;
       stockCountId?: string;
       prepBatchId?: string;
@@ -85,10 +88,36 @@ export class StockService {
     // beyond what was actually on hand.
     await tx.$queryRaw`SELECT id FROM ingredients WHERE id = ${ingredientId} FOR UPDATE`;
 
+    const day = utcDayStart(new Date());
     const batches = await tx.stockBatch.findMany({
-      where: { branchId, ingredientId, quantityRemaining: { gt: 0 } },
+      where: {
+        branchId,
+        ingredientId,
+        quantityRemaining: { gt: 0 },
+        ...(opts.skipExpired
+          ? { OR: [{ expiryDate: null }, { expiryDate: { gte: day } }] }
+          : {}),
+      },
       orderBy: { receivedAt: 'asc' },
     });
+    if (opts.skipExpired) {
+      const expired = await tx.stockBatch.findMany({
+        where: {
+          branchId,
+          ingredientId,
+          quantityRemaining: { gt: 0 },
+          expiryDate: { lt: day },
+        },
+        select: { quantityRemaining: true },
+      });
+      const expiredQty = expired.reduce((sum, batch) => sum + Number(batch.quantityRemaining), 0);
+      const usable = batches.reduce((sum, batch) => sum + Number(batch.quantityRemaining), 0);
+      if (quantity > 0 && usable <= 0 && expiredQty > 0) {
+        throw new BadRequestException(
+          `${ingredient.name} is past its expiry date and cannot be sold`,
+        );
+      }
+    }
 
     const availableFromBatches = batches.reduce(
       (sum, b) => sum + Number(b.quantityRemaining),

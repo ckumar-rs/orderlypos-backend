@@ -354,8 +354,11 @@ export class InventoryService {
   // What moves is decided by planStockUsage(): RECIPE items deduct their
   // recipe lines, DIRECT items deduct one stock item, NONE items nothing,
   // combos expand into their components. Stock may go negative on purpose
-  // (allowNegative): a shortage must never block a paid sale, it shows up as
-  // a negative balance for the next stocktake. Tracked items that cannot be
+  // (allowNegative): a count below the reorder point, or a short count, must
+  // never block a paid sale. It shows up as a negative balance for the next
+  // stocktake. A batch dated before today is left untouched. When every
+  // remaining batch of that ingredient is expired, the sale is refused.
+  // Tracked items that cannot be
   // mapped to stock are returned in `skipped` and reported by the caller -
   // never silently ignored.
   //
@@ -388,6 +391,7 @@ export class InventoryService {
           note: 'Order checkout',
           userId,
           allowNegative: true,
+          skipExpired: true,
           orderId,
         },
       );

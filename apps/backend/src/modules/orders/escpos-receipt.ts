@@ -16,6 +16,7 @@ import {
   type TaxMode,
   type TaxRegime,
 } from '@nodedr-restaurant/types';
+import { branchGstState, indiaPlaceOfSupply, splitIndiaGst } from '../../common/india-gst';
 import {
   CMD,
   EscposWriter,
@@ -126,6 +127,7 @@ export function buildReceiptEscPosJob({
     address: string | null;
     phone: string | null;
     gstNumber: string | null;
+    gstStateCode?: string | null;
     taxRegime: TaxRegime;
     taxMode: TaxMode;
     taxLabel: string | null;
@@ -198,14 +200,15 @@ export function buildReceiptEscPosJob({
       // Prices are tax-inclusive - this is a breakup of tax already inside
       // the total above, not an additional charge (see ARCHITECTURE.md).
       if (TAX_REGIME_PRESETS[branch.taxRegime].splitCgstSgst) {
-        if (order.interstate) {
-          w.row('IGST (incl.)', money(order.taxAmount));
-        } else {
-          const half =
-            Math.round((order.taxAmount / 2 + Number.EPSILON) * 100) / 100;
-          w.row('CGST (incl.)', money(half));
-          w.row('SGST (incl.)', money(order.taxAmount - half));
-        }
+        const supply = indiaPlaceOfSupply(branchGstState(branch.gstStateCode, branch.gstNumber), null);
+        const split = splitIndiaGst(order.taxAmount, {
+          interstate: !!order.interstate,
+          intraUt: !order.interstate && supply.intraUt,
+        });
+        if (split.igst) w.row('IGST (incl.)', money(split.igst));
+        if (split.cgst) w.row('CGST (incl.)', money(split.cgst));
+        if (split.sgst) w.row('SGST (incl.)', money(split.sgst));
+        if (split.utgst) w.row('UTGST (incl.)', money(split.utgst));
       } else {
         w.row(`${taxLabel} (incl.)`, money(order.taxAmount));
       }

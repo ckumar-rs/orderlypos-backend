@@ -16,3 +16,11 @@ services:
         value: "https://orderlypos-ui.vercel.app"
       - key: COOKIE_SECURE
         value: "true"
+      - key: PUBLIC_ASSET_BASE_URL
+        value: "https://orderlypos-ui.vercel.app"
+      - key: META_APP_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        value: "https://api.openai.com/v1"

@@ -176,6 +176,7 @@ model Restaurant {
   brands             Brand[]
   exchangeRates      ExchangeRate[]
   installedApps      InstalledApp[]
+  whatsappCatalogConnections WhatsAppCatalogConnection[]
 
   @@map("restaurants")
 }
@@ -283,6 +284,7 @@ model Branch {
 
   floors          Floor[]
   whatsappIntake  WhatsAppIntake?
+  whatsappCatalog WhatsAppCatalogConnection?
   tillSessions    TillSession[]
   approvalRequests ApprovalRequest[]
   users           UserBranch[]
@@ -1565,6 +1567,7 @@ model MenuItem {
   channelPrices   MenuItemChannelPrice[]
   menuSets        MenuSetItem[]
   recipeRevisions RecipeRevision[]
+  catalogProduct  WhatsAppCatalogProduct?
   brandItem       BrandMenuItem? @relation(fields: [brandItemId], references: [id], onDelete: SetNull)
   brandItemId     String?
 
@@ -3348,6 +3351,99 @@ model WhatsAppIntake {
   updatedAt    DateTime @updatedAt
 
   @@map("whatsapp_intakes")
+}
+
+// WhatsApp product catalog for one branch. The access token is sealed the
+// same way as Restaurant.waCloudAccessTokenSealed. This is not WhatsAppIntake,
+// which only receives orders on a branch secret.
+model WhatsAppCatalogConnection {
+  id                 String   @id @default(cuid())
+  restaurantId       String
+  restaurant         Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  branchId           String   @unique
+  branch             Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  provider           String   @default("META")
+  kapsoCustomerId    String?
+  phoneNumberId      String   @unique
+  wabaId             String
+  businessPhone      String?
+  catalogId          String
+  connectionStatus   String   @default("PENDING")
+  accessTokenSealed  String?
+  verifyTokenHash    String?  @unique
+  lastWebhookAt      DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  products WhatsAppCatalogProduct[]
+
+  @@index([restaurantId])
+  @@map("whatsapp_catalog_connections")
+}
+
+model WhatsAppCatalogProduct {
+  id            String    @id @default(cuid())
+  connectionId  String
+  connection    WhatsAppCatalogConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  menuItemId    String    @unique
+  menuItem      MenuItem  @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  retailerId    String
+  payloadHash   String?
+  syncStatus    String    @default("PENDING")
+  attempts      Int       @default(0)
+  lastSyncedAt  DateTime?
+  lastError     String?
+  nextAttemptAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([connectionId, retailerId])
+  @@index([syncStatus, nextAttemptAt])
+  @@map("whatsapp_catalog_products")
+}
+
+// One Cloud API webhook message. The provider event id is the WhatsApp message
+// id, so a retry of the same POST cannot be stored twice.
+model WhatsAppCatalogEvent {
+  id                String    @id @default(cuid())
+  provider          String    @default("META")
+  providerEventId   String
+  phoneNumberId     String?
+  restaurantId      String?
+  branchId          String?
+  eventType         String
+  payload           Json
+  processingStatus  String    @default("RECEIVED")
+  attempts          Int       @default(0)
+  lastError         String?
+  receivedAt        DateTime  @default(now())
+  processedAt       DateTime?
+
+  @@unique([provider, providerEventId])
+  @@index([processingStatus, receivedAt])
+  @@map("whatsapp_catalog_events")
+}
+
+// The cart Meta sent, and the order the existing order service created from it.
+model WhatsAppCatalogSubmission {
+  id                String   @id @default(cuid())
+  restaurantId      String
+  branchId          String
+  messageId         String
+  customerId        String?
+  catalogId         String?
+  submittedCart     Json
+  validatedCart     Json?
+  orderId           String?
+  submissionStatus  String   @default("RECEIVED")
+  rejectionReason   String?
+  receiptSentAt     DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([branchId, messageId])
+  @@index([branchId, createdAt])
+  @@map("whatsapp_catalog_submissions")
 }
 
 model TillSession {

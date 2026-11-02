@@ -14,6 +14,7 @@
 // note) and are never recomputed here.
 
 import { qrSvg } from '../verifactu/verifactu.qr';
+import { branchGstState, indiaPlaceOfSupply, splitIndiaGst } from '../../common/india-gst';
 import type { ReceiptVerifactu } from './escpos-receipt';
 import {
   resolveTaxIdLabel,
@@ -91,6 +92,7 @@ export function buildReceiptHtml({
     address: string | null;
     phone: string | null;
     gstNumber: string | null;
+    gstStateCode?: string | null;
     taxRegime: TaxRegime;
     taxMode: TaxMode;
     taxLabel: string | null;
@@ -163,14 +165,15 @@ export function buildReceiptHtml({
       // Prices are tax-inclusive (see ARCHITECTURE.md) — this is a breakup
       // of tax already inside the total above, not an additional charge.
       if (TAX_REGIME_PRESETS[branch.taxRegime].splitCgstSgst) {
-        if (order.interstate) {
-          totalRows.push(['IGST (incl.)', money(order.taxAmount)]);
-        } else {
-          const half =
-            Math.round((order.taxAmount / 2 + Number.EPSILON) * 100) / 100;
-          totalRows.push(['CGST (incl.)', money(half)]);
-          totalRows.push(['SGST (incl.)', money(order.taxAmount - half)]);
-        }
+        const supply = indiaPlaceOfSupply(branchGstState(branch.gstStateCode, branch.gstNumber), null);
+        const split = splitIndiaGst(order.taxAmount, {
+          interstate: !!order.interstate,
+          intraUt: !order.interstate && supply.intraUt,
+        });
+        if (split.igst) totalRows.push(['IGST (incl.)', money(split.igst)]);
+        if (split.cgst) totalRows.push(['CGST (incl.)', money(split.cgst)]);
+        if (split.sgst) totalRows.push(['SGST (incl.)', money(split.sgst)]);
+        if (split.utgst) totalRows.push(['UTGST (incl.)', money(split.utgst)]);
       } else {
         totalRows.push([`${taxLabel} (incl.)`, money(order.taxAmount)]);
       }

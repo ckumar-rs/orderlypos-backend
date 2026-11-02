@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AuditModule } from '../../audit/audit.module';
 import { AccountingModule } from '../accounting/accounting.module';
 import { BranchAccessService } from '../../common/services/branch-access.service';
@@ -8,6 +8,7 @@ import { InventoryModule } from '../inventory/inventory.module';
 import { MarketingModule } from '../marketing/marketing.module';
 import { MenuModule } from '../menu/menu.module';
 import { VerifactuModule } from '../verifactu/verifactu.module';
+import { WhatsAppCatalogModule } from '../whatsapp-catalog/whatsapp-catalog.module';
 import { DemoFlowsService } from './demo-flows.service';
 import { KotPrintService } from './kot-print.service';
 import { OrdersController } from './orders.controller';
@@ -21,9 +22,10 @@ import { ScheduledOrdersService } from './scheduled-orders.service';
     AuditModule,
     NotificationsModule,
     MarketingModule,
-    MenuModule,
+    forwardRef(() => MenuModule),
     VerifactuModule,
     AccountingModule,
+    forwardRef(() => WhatsAppCatalogModule),
   ],
   controllers: [OrdersController],
   providers: [

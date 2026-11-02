@@ -237,6 +237,18 @@ export class AccountingController {
   }
 
   @Auth('accounting.manage')
+  @Get('gst/billing')
+  async gstBilling(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.gstBilling(branchId, from, to);
+  }
+
+  @Auth('accounting.manage')
   @Get('branches')
   branches(
     @CurrentUser() u: SessionUser,
