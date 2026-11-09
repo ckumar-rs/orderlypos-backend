@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 import {
   canTransitionKot,
   KOT_STARTED_STATUSES,
@@ -40,6 +41,7 @@ import {
   branchOrderingFlags,
   readBranchSettingsMap,
   readRestaurantSettingsMap,
+  restaurantBillPayLinkPrefs,
   restaurantPaymentPrefs,
   seedBranchSettings,
   seedRestaurantSettings,
@@ -103,6 +105,81 @@ export class OrdersService {
       include: { table: true, items: true, customer: true },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /** Mint (or refresh) an opaque guest phone pay link for an open bill. */
+  async createPayLink(
+    branchId: string,
+    orderId: string,
+    restaurantId: string,
+    userId: string,
+  ) {
+    await seedRestaurantSettings(this.prisma, restaurantId);
+    const map = await readRestaurantSettingsMap(this.prisma, restaurantId);
+    const prefs = restaurantBillPayLinkPrefs(map);
+    if (!prefs.billPayLinkEnabled) {
+      throw new BadRequestException(
+        'Bill pay links are turned off in Settings',
+      );
+    }
+
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { upiVpa: true },
+    });
+    if (!(restaurant?.upiVpa ?? '').trim()) {
+      throw new BadRequestException(
+        'Set a UPI id in Settings before sharing a pay link',
+      );
+    }
+
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, branchId },
+      select: {
+        id: true,
+        status: true,
+        orderNumber: true,
+        payToken: true,
+        payTokenExpiresAt: true,
+      },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.status !== 'OPEN') {
+      throw new BadRequestException('Only open bills can get a pay link');
+    }
+
+    const ttlMs = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const stillValid =
+      order.payToken &&
+      order.payTokenExpiresAt &&
+      order.payTokenExpiresAt.getTime() > now;
+    const token = stillValid ? order.payToken! : randomBytes(24).toString('hex');
+    const expiresAt = new Date(now + ttlMs);
+
+    await this.prisma.order.update({
+      where: { id: order.id },
+      data: {
+        payToken: token,
+        payTokenExpiresAt: expiresAt,
+      },
+    });
+
+    await this.audit.record({
+      userId,
+      action: 'orders.pay_link',
+      entity: 'Order',
+      entityId: order.id,
+      metadata: { orderNumber: order.orderNumber },
+    });
+
+    return {
+      token,
+      path: `/pay/${token}`,
+      expiresAt: expiresAt.toISOString(),
+      orderNumber: order.orderNumber,
+      whatsappMessageTemplate: prefs.billPayLinkWhatsappMessage,
+    };
   }
 
   async getOrder(branchId: string, id: string) {
@@ -2017,6 +2094,8 @@ export class OrdersService {
             ...lockedFigures,
             status: 'PAID',
             billedAt: new Date(),
+            // Keep payToken so the guest page can poll to "Paid"; claim-paid
+            // already rejects non-OPEN. New links cannot be minted for PAID.
             payments: { create: paymentRows },
           },
         });

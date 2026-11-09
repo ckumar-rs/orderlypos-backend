@@ -12,24 +12,35 @@ import {
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
+/**
+ * Insert only missing defaults in one round-trip. Per-key upserts against Neon
+ * (especially from getOnboarding / get settings on every page load) time out
+ * and surface as HTTP 500s.
+ */
 export async function seedRestaurantSettings(db: Db, restaurantId: string) {
-  for (const [key, value] of Object.entries(DEFAULT_RESTAURANT_SETTINGS)) {
-    await db.restaurantSetting.upsert({
-      where: { restaurantId_key: { restaurantId, key } },
-      create: { restaurantId, key, value },
-      update: {},
-    });
-  }
+  const existing = await db.restaurantSetting.findMany({
+    where: { restaurantId },
+    select: { key: true },
+  });
+  const have = new Set(existing.map((row) => row.key));
+  const missing = Object.entries(DEFAULT_RESTAURANT_SETTINGS)
+    .filter(([key]) => !have.has(key))
+    .map(([key, value]) => ({ restaurantId, key, value }));
+  if (missing.length === 0) return;
+  await db.restaurantSetting.createMany({ data: missing, skipDuplicates: true });
 }
 
 export async function seedBranchSettings(db: Db, branchId: string) {
-  for (const [key, value] of Object.entries(DEFAULT_BRANCH_SETTINGS)) {
-    await db.branchSetting.upsert({
-      where: { branchId_key: { branchId, key } },
-      create: { branchId, key, value },
-      update: {},
-    });
-  }
+  const existing = await db.branchSetting.findMany({
+    where: { branchId },
+    select: { key: true },
+  });
+  const have = new Set(existing.map((row) => row.key));
+  const missing = Object.entries(DEFAULT_BRANCH_SETTINGS)
+    .filter(([key]) => !have.has(key))
+    .map(([key, value]) => ({ branchId, key, value }));
+  if (missing.length === 0) return;
+  await db.branchSetting.createMany({ data: missing, skipDuplicates: true });
 }
 
 export async function readRestaurantSettingsMap(db: Db, restaurantId: string) {
@@ -90,6 +101,21 @@ export function restaurantPaymentPrefs(map: Map<string, string>) {
     map.get(RestaurantSettingKey.cashLabel) ??
     DEFAULT_RESTAURANT_SETTINGS[RestaurantSettingKey.cashLabel];
   return { order, preferred, cashLabel };
+}
+
+export function restaurantBillPayLinkPrefs(map: Map<string, string>) {
+  return {
+    billPayLinkEnabled: asBool(
+      map.get(RestaurantSettingKey.billPayLinkEnabled),
+      DEFAULT_RESTAURANT_SETTINGS[RestaurantSettingKey.billPayLinkEnabled] ===
+        'true',
+    ),
+    billPayLinkWhatsappMessage:
+      map.get(RestaurantSettingKey.billPayLinkWhatsappMessage) ??
+      DEFAULT_RESTAURANT_SETTINGS[
+        RestaurantSettingKey.billPayLinkWhatsappMessage
+      ],
+  };
 }
 
 export function branchOrderingFlags(map: Map<string, string>) {

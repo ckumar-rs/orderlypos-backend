@@ -424,6 +424,22 @@ export class OrdersController {
   }
 
   @Auth('bills.print')
+  @Post(':id/pay-link')
+  async createPayLink(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.ordersService.createPayLink(
+      branchId,
+      id,
+      user.restaurantId,
+      user.id,
+    );
+  }
+
+  @Auth('bills.print')
   @Post(':id/checkout')
   @UsePipes(new ZodValidationPipe(checkoutSchema))
   async checkout(

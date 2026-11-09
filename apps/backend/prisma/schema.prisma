@@ -2169,6 +2169,10 @@ model Order {
   driverLng        Decimal?  @db.Decimal(9, 6)
   driverLocationAt DateTime?
   trackingToken    String?   @unique
+  // Opaque token for the guest phone pay page (/pay/:token). Issued from the
+  // till; public reads resolve by token only (no branchId from the client).
+  payToken         String?   @unique
+  payTokenExpiresAt DateTime?
   driverPings      DriverPing[]
   deliveryTrackingEvents DeliveryTrackingEvent[]
   paymentIntents   PaymentIntent[]

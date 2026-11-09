@@ -6,8 +6,11 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  ONBOARDING_STEPS,
   TAX_REGIME_PRESETS,
   type BranchSettingsDto,
+  type OnboardingPatchDto,
+  type OnboardingStep,
   type RestaurantSettingsDto,
 } from '@nodedr-restaurant/types';
 import { AuditService } from '../../audit/audit.service';
@@ -18,6 +21,7 @@ import {
   BranchSettingKey,
   RestaurantSettingKey,
   DEFAULT_RESTAURANT_SETTINGS,
+  asBool,
   type BranchSettingKeyName,
 } from './setting-keys';
 import {
@@ -27,6 +31,7 @@ import {
   branchTeamHrSettings,
   readBranchSettingsMap,
   readRestaurantSettingsMap,
+  restaurantBillPayLinkPrefs,
   restaurantPaymentPrefs,
   seedBranchSettings,
   seedRestaurantSettings,
@@ -108,6 +113,7 @@ export class SettingsService {
     const restaurantMap = await readRestaurantSettingsMap(this.prisma, restaurantId);
     const branchMap = await readBranchSettingsMap(this.prisma, branchId);
     const payment = restaurantPaymentPrefs(restaurantMap);
+    const billPay = restaurantBillPayLinkPrefs(restaurantMap);
     const ordering = branchOrderingFlags(branchMap);
     const tracking = branchDeliveryTracking(branchMap);
     const teamHr = branchTeamHrSettings(branchMap);
@@ -118,6 +124,8 @@ export class SettingsService {
         preferredPaymentMethod: payment.preferred || null,
         paymentMethodOrder: payment.order,
         cashLabel: payment.cashLabel,
+        billPayLinkEnabled: billPay.billPayLinkEnabled,
+        billPayLinkWhatsappMessage: billPay.billPayLinkWhatsappMessage,
       },
       branch: {
         ...branch,
@@ -148,6 +156,8 @@ export class SettingsService {
       preferredPaymentMethod,
       paymentMethodOrder,
       cashLabel,
+      billPayLinkEnabled,
+      billPayLinkWhatsappMessage,
       ...rest
     } = dto;
     if (preferredPaymentMethod !== undefined) {
@@ -173,6 +183,25 @@ export class SettingsService {
         RestaurantSettingKey.cashLabel,
         cashLabel.trim() ||
           DEFAULT_RESTAURANT_SETTINGS[RestaurantSettingKey.cashLabel],
+      );
+    }
+    if (billPayLinkEnabled !== undefined) {
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.billPayLinkEnabled,
+        billPayLinkEnabled ? 'true' : 'false',
+      );
+    }
+    if (billPayLinkWhatsappMessage !== undefined) {
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.billPayLinkWhatsappMessage,
+        billPayLinkWhatsappMessage.trim() ||
+          DEFAULT_RESTAURANT_SETTINGS[
+            RestaurantSettingKey.billPayLinkWhatsappMessage
+          ],
       );
     }
     const data: Record<string, unknown> = { ...rest };
@@ -550,6 +579,300 @@ export class SettingsService {
         err instanceof Error ? err.message : 'Could not send the test email',
       );
     }
+  }
+
+  async getOnboarding(restaurantId: string, branchId: string) {
+    await seedRestaurantSettings(this.prisma, restaurantId);
+    const [map, restaurant, branch, floorCount, tableCount, menuItemCount] =
+      await Promise.all([
+        readRestaurantSettingsMap(this.prisma, restaurantId),
+        this.prisma.restaurant.findUnique({
+          where: { id: restaurantId },
+          select: {
+            currency: true,
+            timezone: true,
+            upiVpa: true,
+            loyaltyPointValue: true,
+            loyaltyEarnPerCurrency: true,
+          },
+        }),
+        this.prisma.branch.findFirst({
+          where: { id: branchId, restaurantId },
+          select: {
+            address: true,
+            phone: true,
+            country: true,
+            taxRegime: true,
+            gstNumber: true,
+            taxId: true,
+          },
+        }),
+        this.prisma.floor.count({ where: { branchId } }),
+        this.prisma.table.count({ where: { floor: { branchId } } }),
+        this.prisma.menuItem.count({ where: { branchId, isActive: true } }),
+      ]);
+    if (!restaurant || !branch) {
+      throw new NotFoundException('Restaurant or branch not found');
+    }
+
+    const enabled = asBool(
+      map.get(RestaurantSettingKey.onboardingEnabled),
+      DEFAULT_RESTAURANT_SETTINGS[RestaurantSettingKey.onboardingEnabled] ===
+        'true',
+    );
+    const completed = asBool(
+      map.get(RestaurantSettingKey.onboardingCompleted),
+      false,
+    );
+    const skipped = asBool(
+      map.get(RestaurantSettingKey.onboardingSkipped),
+      false,
+    );
+    const rawStep = map.get(RestaurantSettingKey.onboardingStep) ?? 'business';
+    const step = (ONBOARDING_STEPS as readonly string[]).includes(rawStep)
+      ? (rawStep as OnboardingStep)
+      : 'business';
+
+    const checks = {
+      business: Boolean(restaurant.currency && restaurant.timezone),
+      branch: Boolean(
+        (branch.address ?? '').trim() ||
+          (branch.phone ?? '').trim() ||
+          branch.taxRegime,
+      ),
+      floor: floorCount > 0 && tableCount > 0,
+      menu: menuItemCount > 0,
+      guests: Number(restaurant.loyaltyEarnPerCurrency) > 0,
+      upiOptional: Boolean((restaurant.upiVpa ?? '').trim()),
+    };
+
+    const kv = (key: (typeof RestaurantSettingKey)[keyof typeof RestaurantSettingKey]) =>
+      map.get(key) ?? DEFAULT_RESTAURANT_SETTINGS[key];
+
+    const config = {
+      labelBusiness: kv(RestaurantSettingKey.onboardingLabelBusiness),
+      labelBranch: kv(RestaurantSettingKey.onboardingLabelBranch),
+      labelFloor: kv(RestaurantSettingKey.onboardingLabelFloor),
+      labelMenu: kv(RestaurantSettingKey.onboardingLabelMenu),
+      labelGuests: kv(RestaurantSettingKey.onboardingLabelGuests),
+      bodyBusiness: kv(RestaurantSettingKey.onboardingBodyBusiness),
+      bodyBranch: kv(RestaurantSettingKey.onboardingBodyBranch),
+      bodyFloor: kv(RestaurantSettingKey.onboardingBodyFloor),
+      bodyMenu: kv(RestaurantSettingKey.onboardingBodyMenu),
+      bodyGuests: kv(RestaurantSettingKey.onboardingBodyGuests),
+      defaultFloorName: kv(RestaurantSettingKey.onboardingDefaultFloorName),
+      defaultTableCount: kv(RestaurantSettingKey.onboardingDefaultTableCount),
+      defaultTableCapacity: kv(RestaurantSettingKey.onboardingDefaultTableCapacity),
+      defaultCategoryName: kv(RestaurantSettingKey.onboardingDefaultCategoryName),
+      defaultDishName: kv(RestaurantSettingKey.onboardingDefaultDishName),
+      defaultDishPrice: kv(RestaurantSettingKey.onboardingDefaultDishPrice),
+      defaultDishTaxPercent: kv(RestaurantSettingKey.onboardingDefaultDishTaxPercent),
+    };
+
+    // Existing outlets that already have a floor + menu should not be trapped
+    // by newly seeded onboarding_completed=false keys.
+    const readyForService = checks.business && checks.floor && checks.menu;
+    return {
+      enabled,
+      completed,
+      skipped,
+      step,
+      checks,
+      config,
+      counts: { floors: floorCount, tables: tableCount, menuItems: menuItemCount },
+      needsWizard: enabled && !completed && !skipped && !readyForService,
+    };
+  }
+
+  async patchOnboarding(
+    restaurantId: string,
+    userId: string,
+    branchId: string,
+    dto: OnboardingPatchDto,
+  ) {
+    await seedRestaurantSettings(this.prisma, restaurantId);
+
+    if (dto.action === 'set_enabled') {
+      if (dto.enabled === undefined) {
+        throw new BadRequestException('enabled is required for set_enabled');
+      }
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingEnabled,
+        dto.enabled ? 'true' : 'false',
+      );
+      await this.audit.record({
+        userId,
+        action: 'settings.onboarding_enabled',
+        entity: 'Restaurant',
+        entityId: restaurantId,
+        metadata: { enabled: dto.enabled },
+      });
+      return this.getOnboarding(restaurantId, branchId);
+    }
+
+    if (dto.action === 'set_config') {
+      if (!dto.config) {
+        throw new BadRequestException('config is required for set_config');
+      }
+      const writes: Array<
+        [(typeof RestaurantSettingKey)[keyof typeof RestaurantSettingKey], string | undefined]
+      > = [
+        [RestaurantSettingKey.onboardingLabelBusiness, dto.config.labelBusiness],
+        [RestaurantSettingKey.onboardingLabelBranch, dto.config.labelBranch],
+        [RestaurantSettingKey.onboardingLabelFloor, dto.config.labelFloor],
+        [RestaurantSettingKey.onboardingLabelMenu, dto.config.labelMenu],
+        [RestaurantSettingKey.onboardingLabelGuests, dto.config.labelGuests],
+        [RestaurantSettingKey.onboardingBodyBusiness, dto.config.bodyBusiness],
+        [RestaurantSettingKey.onboardingBodyBranch, dto.config.bodyBranch],
+        [RestaurantSettingKey.onboardingBodyFloor, dto.config.bodyFloor],
+        [RestaurantSettingKey.onboardingBodyMenu, dto.config.bodyMenu],
+        [RestaurantSettingKey.onboardingBodyGuests, dto.config.bodyGuests],
+        [RestaurantSettingKey.onboardingDefaultFloorName, dto.config.defaultFloorName],
+        [RestaurantSettingKey.onboardingDefaultTableCount, dto.config.defaultTableCount],
+        [
+          RestaurantSettingKey.onboardingDefaultTableCapacity,
+          dto.config.defaultTableCapacity,
+        ],
+        [
+          RestaurantSettingKey.onboardingDefaultCategoryName,
+          dto.config.defaultCategoryName,
+        ],
+        [RestaurantSettingKey.onboardingDefaultDishName, dto.config.defaultDishName],
+        [RestaurantSettingKey.onboardingDefaultDishPrice, dto.config.defaultDishPrice],
+        [
+          RestaurantSettingKey.onboardingDefaultDishTaxPercent,
+          dto.config.defaultDishTaxPercent,
+        ],
+      ];
+      for (const [key, value] of writes) {
+        if (value === undefined) continue;
+        await setRestaurantSetting(this.prisma, restaurantId, key, value);
+      }
+      await this.audit.record({
+        userId,
+        action: 'settings.onboarding_config',
+        entity: 'Restaurant',
+        entityId: restaurantId,
+      });
+      return this.getOnboarding(restaurantId, branchId);
+    }
+
+    if (dto.action === 'reopen') {
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingCompleted,
+        'false',
+      );
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingSkipped,
+        'false',
+      );
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingStep,
+        dto.step ?? 'business',
+      );
+      await this.audit.record({
+        userId,
+        action: 'settings.onboarding_reopen',
+        entity: 'Restaurant',
+        entityId: restaurantId,
+      });
+      return this.getOnboarding(restaurantId, branchId);
+    }
+
+    if (dto.action === 'skip') {
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingSkipped,
+        'true',
+      );
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingCompleted,
+        'true',
+      );
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingStep,
+        'done',
+      );
+      await this.audit.record({
+        userId,
+        action: 'settings.onboarding_skip',
+        entity: 'Restaurant',
+        entityId: restaurantId,
+      });
+      return this.getOnboarding(restaurantId, branchId);
+    }
+
+    if (dto.action === 'complete') {
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingCompleted,
+        'true',
+      );
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingSkipped,
+        'false',
+      );
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingStep,
+        'done',
+      );
+      await this.audit.record({
+        userId,
+        action: 'settings.onboarding_complete',
+        entity: 'Restaurant',
+        entityId: restaurantId,
+      });
+      return this.getOnboarding(restaurantId, branchId);
+    }
+
+    // advance
+    const step = dto.step ?? 'business';
+    await setRestaurantSetting(
+      this.prisma,
+      restaurantId,
+      RestaurantSettingKey.onboardingStep,
+      step,
+    );
+    if (step === 'done') {
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingCompleted,
+        'true',
+      );
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.onboardingSkipped,
+        'false',
+      );
+    }
+    await this.audit.record({
+      userId,
+      action: 'settings.onboarding_advance',
+      entity: 'Restaurant',
+      entityId: restaurantId,
+      metadata: { step },
+    });
+    return this.getOnboarding(restaurantId, branchId);
   }
 }
 

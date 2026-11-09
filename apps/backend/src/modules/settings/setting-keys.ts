@@ -4,6 +4,37 @@ export const RestaurantSettingKey = {
   preferredPaymentMethod: 'preferred_payment_method',
   paymentMethodOrder: 'payment_method_order',
   cashLabel: 'cash_label',
+  /** When true, incomplete owners are gated to /onboarding after sign-in. */
+  onboardingEnabled: 'onboarding_enabled',
+  /** When true (or skipped), the first-run wizard no longer redirects. */
+  onboardingCompleted: 'onboarding_completed',
+  /** Current wizard step id (business | branch | floor | menu | guests | done). */
+  onboardingStep: 'onboarding_step',
+  /** Owner chose Skip — still counts as completed for gating. */
+  onboardingSkipped: 'onboarding_skipped',
+  /** Wizard step titles — empty means the UI shows a blank until Settings fills them. */
+  onboardingLabelBusiness: 'onboarding_label_business',
+  onboardingLabelBranch: 'onboarding_label_branch',
+  onboardingLabelFloor: 'onboarding_label_floor',
+  onboardingLabelMenu: 'onboarding_label_menu',
+  onboardingLabelGuests: 'onboarding_label_guests',
+  onboardingBodyBusiness: 'onboarding_body_business',
+  onboardingBodyBranch: 'onboarding_body_branch',
+  onboardingBodyFloor: 'onboarding_body_floor',
+  onboardingBodyMenu: 'onboarding_body_menu',
+  onboardingBodyGuests: 'onboarding_body_guests',
+  /** Prefill values for floor/menu steps — leave empty so owners type real data (no demo catalog). */
+  onboardingDefaultFloorName: 'onboarding_default_floor_name',
+  onboardingDefaultTableCount: 'onboarding_default_table_count',
+  onboardingDefaultTableCapacity: 'onboarding_default_table_capacity',
+  onboardingDefaultCategoryName: 'onboarding_default_category_name',
+  onboardingDefaultDishName: 'onboarding_default_dish_name',
+  onboardingDefaultDishPrice: 'onboarding_default_dish_price',
+  onboardingDefaultDishTaxPercent: 'onboarding_default_dish_tax_percent',
+  /** When true, till can mint a guest phone pay link for an open bill. */
+  billPayLinkEnabled: 'bill_pay_link_enabled',
+  /** WhatsApp share text; use {url} and {order} placeholders. */
+  billPayLinkWhatsappMessage: 'bill_pay_link_whatsapp_message',
 } as const;
 
 export const BranchSettingKey = {
@@ -50,6 +81,35 @@ export const DEFAULT_RESTAURANT_SETTINGS: Record<RestaurantSettingKeyName, strin
   [RestaurantSettingKey.preferredPaymentMethod]: 'UPI',
   [RestaurantSettingKey.paymentMethodOrder]: 'UPI,CASH,CARD,OTHER',
   [RestaurantSettingKey.cashLabel]: 'COD',
+  [RestaurantSettingKey.onboardingEnabled]: 'true',
+  [RestaurantSettingKey.onboardingCompleted]: 'false',
+  [RestaurantSettingKey.onboardingStep]: 'business',
+  [RestaurantSettingKey.onboardingSkipped]: 'false',
+  [RestaurantSettingKey.onboardingLabelBusiness]: 'Business',
+  [RestaurantSettingKey.onboardingLabelBranch]: 'Branch',
+  [RestaurantSettingKey.onboardingLabelFloor]: 'Floor',
+  [RestaurantSettingKey.onboardingLabelMenu]: 'Menu',
+  [RestaurantSettingKey.onboardingLabelGuests]: 'Guests',
+  [RestaurantSettingKey.onboardingBodyBusiness]:
+    'Currency, timezone, and UPI for the checkout QR.',
+  [RestaurantSettingKey.onboardingBodyBranch]:
+    'Address, phone, and tax for this outlet.',
+  [RestaurantSettingKey.onboardingBodyFloor]:
+    'Add a dining area and tables so dine-in works.',
+  [RestaurantSettingKey.onboardingBodyMenu]:
+    'Add a category and one priced dish so the till can sell.',
+  [RestaurantSettingKey.onboardingBodyGuests]:
+    'Loyalty earn and redeem rules for phone-first guests.',
+  [RestaurantSettingKey.onboardingDefaultFloorName]: '',
+  [RestaurantSettingKey.onboardingDefaultTableCount]: '',
+  [RestaurantSettingKey.onboardingDefaultTableCapacity]: '',
+  [RestaurantSettingKey.onboardingDefaultCategoryName]: '',
+  [RestaurantSettingKey.onboardingDefaultDishName]: '',
+  [RestaurantSettingKey.onboardingDefaultDishPrice]: '',
+  [RestaurantSettingKey.onboardingDefaultDishTaxPercent]: '',
+  [RestaurantSettingKey.billPayLinkEnabled]: 'true',
+  [RestaurantSettingKey.billPayLinkWhatsappMessage]:
+    'Here is your bill for order {order}: {url}',
 };
 
 export const DEFAULT_BRANCH_SETTINGS: Record<BranchSettingKeyName, string> = {
