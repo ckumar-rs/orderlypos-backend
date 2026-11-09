@@ -628,7 +628,8 @@ export class SettingsService {
       map.get(RestaurantSettingKey.onboardingSkipped),
       false,
     );
-    const rawStep = map.get(RestaurantSettingKey.onboardingStep) ?? 'business';
+    const rawStep =
+      String(map.get(RestaurantSettingKey.onboardingStep) ?? 'business');
     const step = (ONBOARDING_STEPS as readonly string[]).includes(rawStep)
       ? (rawStep as OnboardingStep)
       : 'business';
