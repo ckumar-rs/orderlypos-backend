@@ -425,6 +425,31 @@ export class ServiceDepthService {
     return { secret, webhookPath: '/api/v1/public/whatsapp/orders' };
   }
 
+  async disableWhatsapp(branchId: string) {
+    const existing = await this.prisma.whatsAppIntake.findUnique({
+      where: { branchId },
+    });
+    if (!existing) {
+      throw new NotFoundException('WhatsApp intake is not set up on this branch');
+    }
+    await this.prisma.whatsAppIntake.update({
+      where: { id: existing.id },
+      data: { enabled: false },
+    });
+    return { ok: true, enabled: false };
+  }
+
+  async revokeWhatsapp(branchId: string) {
+    const existing = await this.prisma.whatsAppIntake.findUnique({
+      where: { branchId },
+    });
+    if (!existing) {
+      throw new NotFoundException('WhatsApp intake is not set up on this branch');
+    }
+    await this.prisma.whatsAppIntake.delete({ where: { id: existing.id } });
+    return { ok: true };
+  }
+
   async whatsappOrders(branchId: string) {
     const rows = await this.prisma.order.findMany({
       where: { branchId, source: 'WHATSAPP' },
@@ -506,7 +531,7 @@ export class ServiceDepthService {
       include: { restaurant: true },
     });
     const preview =
-      order.status === 'OPEN'
+      order.status === 'OPEN' || order.status === 'BILLED'
         ? await this.orders.previewBill(order.branchId, order.id, { tipAmount: Number(order.tipAmount) })
         : null;
     const gateway = branch
@@ -515,15 +540,24 @@ export class ServiceDepthService {
           select: { id: true },
         })
       : null;
+    const intent = await this.prisma.paymentIntent.findFirst({
+      where: { orderId: order.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    const due =
+      order.status === 'PAID'
+        ? 0
+        : preview?.balanceDue ?? preview?.totalDue ?? Number(order.totalAmount);
     return {
       orderNumber: order.orderNumber,
       status: order.status,
       totalAmount: Number(order.totalAmount),
       tipAmount: Number(order.tipAmount),
-      due: preview?.totalDue ?? Number(order.totalAmount),
+      due,
       currency: branch?.restaurant.currency ?? 'INR',
-      demoMode: branch?.restaurant.demoMode ?? false,
       gatewayAvailable: Boolean(gateway),
+      checkoutUrl: intent?.status === 'PENDING' ? intent.checkoutUrl : null,
+      intentStatus: intent?.status ?? null,
       upi: branch?.restaurant.upiVpa
         ? { vpa: branch.restaurant.upiVpa, payeeName: branch.restaurant.upiPayeeName || branch.restaurant.name }
         : null,
@@ -540,7 +574,9 @@ export class ServiceDepthService {
   async guestPay(qrToken: string, orderNumber: string) {
     const order = await this.guestOrder(qrToken, orderNumber);
     if (order.status === 'PAID') return { paid: true };
-    if (order.status !== 'OPEN') throw new BadRequestException('This order can no longer be paid');
+    if (order.status !== 'OPEN' && order.status !== 'BILLED') {
+      throw new BadRequestException('This order can no longer be paid');
+    }
     const branch = await this.prisma.branch.findUniqueOrThrow({
       where: { id: order.branchId },
       include: { restaurant: true },
@@ -548,28 +584,29 @@ export class ServiceDepthService {
     const preview = await this.orders.previewBill(order.branchId, order.id, {
       tipAmount: Number(order.tipAmount),
     });
-    const due = preview.totalDue;
+    const due = preview.balanceDue > 0 ? preview.balanceDue : preview.totalDue;
     if (!(due > 0)) throw new BadRequestException('Nothing is due on this order');
-    if (branch.restaurant.demoMode) {
-      await this.orders.checkout(order.branchId, order.id, order.createdById, {
-        payments: [{ method: 'UPI', amount: due, reference: `DEMO${order.orderNumber}`.slice(0, 40) }],
-        tipAmount: Number(order.tipAmount),
-        requestId: `guest${order.id}`.slice(0, 64),
-      });
-      return { paid: true, due };
-    }
     const gateway = await this.prisma.paymentGateway.findFirst({
       where: { restaurantId: branch.restaurantId, enabled: true, NOT: { baseUrl: null } },
     });
     if (gateway?.baseUrl) {
-      const intent = await this.commerce.createIntent(
-        order.branchId,
-        branch.restaurantId,
-        order.id,
-        gateway.provider,
-        due,
-      );
-      return { paid: false, due, checkoutUrl: intent.checkoutUrl };
+      try {
+        const intent = await this.commerce.createIntent(
+          order.branchId,
+          branch.restaurantId,
+          order.id,
+          gateway.provider,
+          due,
+        );
+        return {
+          paid: false,
+          due,
+          checkoutUrl: intent.checkoutUrl,
+          intentId: intent.id,
+        };
+      } catch {
+        // Gateway URL stored but not reachable yet — fall through to UPI / counter.
+      }
     }
     if (!branch.restaurant.upiVpa) {
       throw new BadRequestException('Pay at the counter. No UPI id and no gateway is stored');
@@ -579,6 +616,10 @@ export class ServiceDepthService {
 
   async guestTip(qrToken: string, orderNumber: string, tipAmount: number) {
     const order = await this.guestOrder(qrToken, orderNumber);
+    if (order.status === 'PAID') throw new BadRequestException('This order is already paid');
+    if (order.status !== 'OPEN' && order.status !== 'BILLED') {
+      throw new BadRequestException('This order can no longer take a tip');
+    }
     return this.prisma.order.update({
       where: { id: order.id },
       data: { tipAmount: Math.max(0, tipAmount) },
@@ -588,6 +629,7 @@ export class ServiceDepthService {
 
   async guestSplit(qrToken: string, orderNumber: string, itemId: string, guestNumber: number) {
     const order = await this.guestOrder(qrToken, orderNumber);
+    if (order.status === 'PAID') throw new BadRequestException('This order is already paid');
     const line = order.items.find((item) => item.id === itemId);
     if (!line) throw new NotFoundException('Line not found');
     await this.prisma.orderItem.update({ where: { id: line.id }, data: { guestNumber } });
@@ -609,6 +651,13 @@ export class ServiceDepthService {
     });
   }
 
+  async deleteRate(restaurantId: string, id: string) {
+    const row = await this.prisma.exchangeRate.findFirst({ where: { id, restaurantId } });
+    if (!row) throw new NotFoundException('Rate not found');
+    await this.prisma.exchangeRate.delete({ where: { id } });
+    return { ok: true };
+  }
+
   listBrands(restaurantId: string) {
     return this.prisma.brand.findMany({
       where: { restaurantId },
@@ -619,6 +668,27 @@ export class ServiceDepthService {
 
   createBrand(restaurantId: string, name: string) {
     return this.prisma.brand.create({ data: { restaurantId, name: name.trim() } });
+  }
+
+  async updateBrand(restaurantId: string, id: string, name: string) {
+    const brand = await this.prisma.brand.findFirst({ where: { id, restaurantId } });
+    if (!brand) throw new NotFoundException('Brand not found');
+    const trimmed = name.trim();
+    if (!trimmed) throw new BadRequestException('Brand name is required');
+    return this.prisma.brand.update({ where: { id }, data: { name: trimmed } });
+  }
+
+  async deleteBrand(restaurantId: string, id: string) {
+    const brand = await this.prisma.brand.findFirst({
+      where: { id, restaurantId },
+      include: { branches: { select: { id: true } } },
+    });
+    if (!brand) throw new NotFoundException('Brand not found');
+    if (brand.branches.length > 0) {
+      throw new BadRequestException('Unassign every branch from this brand before deleting it');
+    }
+    await this.prisma.brand.delete({ where: { id } });
+    return { ok: true };
   }
 
   async assignBrand(restaurantId: string, branchId: string, brandId: string | null) {
@@ -678,9 +748,27 @@ export class ServiceDepthService {
     const refunds = await this.prisma.refund.findMany({
       where: { method: 'CASH', order: { branchId }, createdAt: { gte: openedAt } },
     });
+    // Approved till expenses since the shift opened (spentOn is a date column).
+    const openedDay = new Date(
+      Date.UTC(openedAt.getUTCFullYear(), openedAt.getUTCMonth(), openedAt.getUTCDate()),
+    );
+    const expenses = await this.prisma.expense.findMany({
+      where: {
+        branchId,
+        paidFromCash: true,
+        status: 'APPROVED',
+        spentOn: { gte: openedDay },
+        OR: [
+          { decidedAt: { gte: openedAt } },
+          { decidedAt: null, createdAt: { gte: openedAt } },
+        ],
+      },
+      select: { amount: true },
+    });
     const inn = payments.reduce((sum, row) => sum + Number(row.amount), 0);
     const out = refunds.reduce((sum, row) => sum + Number(row.amount), 0);
-    return round2(openingFloat + inn - out);
+    const spent = expenses.reduce((sum, row) => sum + Number(row.amount), 0);
+    return round2(openingFloat + inn - out - spent);
   }
 
   private key() {

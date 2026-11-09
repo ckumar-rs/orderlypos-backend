@@ -56,6 +56,25 @@ export class GiftCardsService {
   }
 
   /**
+   * Soft-void: flip isActive off and zero the remaining balance.
+   * Allows voiding cards that still have a balance; rejects a second void.
+   */
+  async voidGiftCard(branchId: string, id: string) {
+    const card = await this.prisma.giftCard.findFirst({
+      where: { id, branchId },
+    });
+    if (!card) throw new NotFoundException('Gift card not found');
+    if (!card.isActive) {
+      throw new BadRequestException('Gift card is already voided');
+    }
+
+    return this.prisma.giftCard.update({
+      where: { id: card.id },
+      data: { isActive: false, balance: 0 },
+    });
+  }
+
+  /**
    * Debits up to `maxAmount` from the card (never more than its balance),
    * returns the amount actually applied. Caller runs this inside the same
    * `$transaction` as the order update.

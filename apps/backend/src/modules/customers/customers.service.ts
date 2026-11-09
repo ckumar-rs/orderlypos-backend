@@ -8,12 +8,15 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { randomInt } from 'crypto';
 import type {
   CustomerDto,
+  CustomerFollowUpDto,
+  CustomerNoteDto,
   EmployeeDiscountPolicyDto,
   LoyaltyRuleDto,
   MembershipTierDto,
   RewardDto,
   RfmLabelDto,
 } from '@nodedr-restaurant/types';
+import { parseCsvLine } from '../accounting/ledger.service';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { hashEmail, openCustomerFields, sealCustomerFields } from './field-seal';
@@ -259,6 +262,21 @@ export class CustomersService {
     });
   }
 
+  async updateReward(branchId: string, id: string, dto: Partial<RewardDto>) {
+    const reward = await this.prisma.reward.findFirst({ where: { id, branchId } });
+    if (!reward) throw new NotFoundException('Reward not found');
+    return this.prisma.reward.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.pointsCost !== undefined ? { pointsCost: dto.pointsCost } : {}),
+        ...(dto.cashbackCost !== undefined
+          ? { cashbackCost: dto.cashbackCost }
+          : {}),
+      },
+    });
+  }
+
   async removeReward(branchId: string, id: string) {
     const reward = await this.prisma.reward.findFirst({ where: { id, branchId } });
     if (!reward) throw new NotFoundException('Reward not found');
@@ -376,6 +394,25 @@ export class CustomersService {
     });
   }
 
+  async updateEmployeeDiscount(
+    branchId: string,
+    id: string,
+    dto: { percent?: number; maxAmount?: number | null; isActive?: boolean },
+  ) {
+    const row = await this.prisma.employeeDiscount.findFirst({
+      where: { id, branchId },
+    });
+    if (!row) throw new NotFoundException('Staff discount not found');
+    return this.prisma.employeeDiscount.update({
+      where: { id },
+      data: {
+        ...(dto.percent !== undefined ? { percent: dto.percent } : {}),
+        ...(dto.maxAmount !== undefined ? { maxAmount: dto.maxAmount } : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+      },
+    });
+  }
+
   async removeEmployeeDiscount(branchId: string, id: string) {
     const row = await this.prisma.employeeDiscount.findFirst({ where: { id, branchId } });
     if (!row) throw new NotFoundException('Staff discount not found');
@@ -387,6 +424,119 @@ export class CustomersService {
     const data = await this.customerData(branchId, dto);
     const row = await this.prisma.customer.create({ data: { ...data, branchId } });
     return openCustomerFields(row, this.sealKey());
+  }
+
+  /**
+   * Import guests from CSV (name, phone, email). Matches existing rows by
+   * phone (last 10 digits) or email hash, then creates or updates.
+   */
+  async importCsv(branchId: string, csv: string) {
+    const lines = csv
+      .replace(/^\uFEFF/, '')
+      .split(/\r?\n/)
+      .filter((l) => l.trim());
+    if (lines.length < 2) {
+      throw new BadRequestException('CSV needs a header row and at least one guest');
+    }
+    if (lines.length - 1 > 5_000) {
+      throw new BadRequestException('Import at most 5,000 guests at once');
+    }
+
+    const head = parseCsvLine(lines[0]).map((h) => h.toLowerCase().trim());
+    const col = (...names: string[]) =>
+      head.findIndex((h) => names.some((n) => h === n || h.includes(n)));
+    const iName = col('name', 'guest', 'customer');
+    const iPhone = col('phone', 'mobile', 'msisdn', 'tel');
+    const iEmail = col('email', 'e-mail', 'mail');
+    if (iPhone < 0 && iEmail < 0) {
+      throw new BadRequestException(
+        'CSV needs a phone and/or email column (and optional name)',
+      );
+    }
+
+    const existing = await this.prisma.customer.findMany({
+      where: { branchId },
+      select: { id: true, phone: true, emailLookup: true, name: true },
+    });
+    const byPhone = new Map<string, string>();
+    const byEmail = new Map<string, string>();
+    for (const row of existing) {
+      const digits = (row.phone ?? '').replace(/\D/g, '');
+      if (digits.length >= 8) byPhone.set(digits.slice(-10), row.id);
+      if (row.emailLookup) byEmail.set(row.emailLookup, row.id);
+    }
+
+    let created = 0;
+    let updated = 0;
+    const errors: { row: number; reason: string }[] = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const rowNum = i + 1;
+      const cells = parseCsvLine(lines[i]);
+      if (cells.every((c) => !c.trim())) continue;
+
+      const name = (iName >= 0 ? cells[iName] : '')?.trim() || undefined;
+      let phone = (iPhone >= 0 ? cells[iPhone] : '')?.trim() || undefined;
+      let email = (iEmail >= 0 ? cells[iEmail] : '')?.trim() || undefined;
+      if (phone) phone = phone.replace(/[^\d+]/g, '');
+      if (email) email = email.toLowerCase();
+
+      if (!phone && !email) {
+        errors.push({ row: rowNum, reason: 'Need a phone or email' });
+        continue;
+      }
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        errors.push({ row: rowNum, reason: 'Invalid email' });
+        continue;
+      }
+      const phoneDigits = (phone ?? '').replace(/\D/g, '');
+      if (phone && phoneDigits.length < 8) {
+        errors.push({ row: rowNum, reason: 'Phone looks too short' });
+        continue;
+      }
+
+      try {
+        const matchId =
+          (phoneDigits.length >= 8
+            ? byPhone.get(phoneDigits.slice(-10))
+            : undefined) ??
+          (email ? byEmail.get(hashEmail(email)) : undefined);
+
+        if (matchId) {
+          const data = await this.customerData(branchId, {
+            ...(name ? { name } : {}),
+            ...(phone ? { phone } : {}),
+            ...(email ? { email } : {}),
+          }, matchId);
+          await this.prisma.customer.update({ where: { id: matchId }, data });
+          updated += 1;
+        } else {
+          const data = await this.customerData(branchId, {
+            name,
+            phone,
+            email,
+          });
+          const row = await this.prisma.customer.create({
+            data: { ...data, branchId },
+          });
+          created += 1;
+          if (phoneDigits.length >= 8) byPhone.set(phoneDigits.slice(-10), row.id);
+          if (email) byEmail.set(hashEmail(email), row.id);
+        }
+      } catch (err) {
+        errors.push({
+          row: rowNum,
+          reason: err instanceof Error ? err.message : 'Could not save row',
+        });
+      }
+    }
+
+    return {
+      created,
+      updated,
+      skipped: errors.length,
+      errors: errors.slice(0, 50),
+    };
   }
 
   async update(branchId: string, id: string, dto: Partial<CustomerDto>) {
@@ -419,6 +569,22 @@ export class CustomersService {
     return this.prisma.membershipTier.create({
       data: {
         restaurantId,
+        name: dto.name,
+        minPoints: dto.minPoints,
+        earnMultiplier: dto.earnMultiplier ?? 1,
+      },
+    });
+  }
+
+  async updateTier(branchId: string, id: string, dto: MembershipTierDto) {
+    const restaurantId = await this.restaurantId(branchId);
+    const tier = await this.prisma.membershipTier.findFirst({
+      where: { id, restaurantId },
+    });
+    if (!tier) throw new NotFoundException('Membership tier not found');
+    return this.prisma.membershipTier.update({
+      where: { id },
+      data: {
         name: dto.name,
         minPoints: dto.minPoints,
         earnMultiplier: dto.earnMultiplier ?? 1,
@@ -686,6 +852,267 @@ export class CustomersService {
       if (!existing) return code;
     }
     throw new BadRequestException('Could not assign a referral code');
+  }
+
+  /** Unified guest activity: notes, follow-ups, paid orders, outbound messages. */
+  async timeline(branchId: string, customerId: string, take = 60) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: customerId, branchId },
+      select: {
+        id: true,
+        phone: true,
+        notes: true,
+        createdAt: true,
+        branch: { select: { restaurantId: true } },
+      },
+    });
+    if (!customer) throw new NotFoundException('Customer not found');
+
+    const limit = Math.min(100, Math.max(1, take));
+    const phoneDigits = (customer.phone ?? '').replace(/\D/g, '');
+    const [notes, followUps, orders, messages] = await Promise.all([
+      this.prisma.customerNote.findMany({
+        where: { customerId, branchId },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        include: { createdBy: { select: { id: true, name: true } } },
+      }),
+      this.prisma.customerFollowUp.findMany({
+        where: { customerId, branchId },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        include: {
+          createdBy: { select: { id: true, name: true } },
+          completedBy: { select: { id: true, name: true } },
+        },
+      }),
+      this.prisma.order.findMany({
+        where: { customerId, branchId, status: 'PAID' },
+        orderBy: { billedAt: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          orderNumber: true,
+          totalAmount: true,
+          billedAt: true,
+        },
+      }),
+      phoneDigits.length >= 8
+        ? this.prisma.outboundMessage.findMany({
+            where: {
+              restaurantId: customer.branch.restaurantId,
+              purpose: 'CAMPAIGN',
+              OR: [
+                { to: { contains: phoneDigits.slice(-10) } },
+                ...(customer.phone ? [{ to: { contains: customer.phone } }] : []),
+              ],
+            },
+            orderBy: { createdAt: 'desc' },
+            take: limit,
+            select: {
+              id: true,
+              channel: true,
+              status: true,
+              body: true,
+              provider: true,
+              createdAt: true,
+              sentAt: true,
+              deliveredAt: true,
+              readAt: true,
+              error: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    type Event = {
+      id: string;
+      kind: string;
+      at: string;
+      title: string;
+      detail?: string | null;
+      meta?: Record<string, unknown>;
+    };
+
+    const events: Event[] = [];
+
+    for (const note of notes) {
+      events.push({
+        id: `note:${note.id}`,
+        kind: 'NOTE',
+        at: note.createdAt.toISOString(),
+        title: 'Staff note',
+        detail: note.body,
+        meta: { createdBy: note.createdBy?.name ?? null },
+      });
+    }
+    for (const row of followUps) {
+      events.push({
+        id: `followup:${row.id}`,
+        kind: row.doneAt ? 'FOLLOW_UP_DONE' : 'FOLLOW_UP',
+        at: (row.doneAt ?? row.createdAt).toISOString(),
+        title: row.doneAt ? `Completed: ${row.title}` : `Follow-up: ${row.title}`,
+        detail: row.body,
+        meta: {
+          dueAt: row.dueAt?.toISOString() ?? null,
+          createdBy: row.createdBy?.name ?? null,
+          completedBy: row.completedBy?.name ?? null,
+          followUpId: row.id,
+          done: Boolean(row.doneAt),
+        },
+      });
+    }
+    for (const order of orders) {
+      events.push({
+        id: `order:${order.id}`,
+        kind: 'ORDER',
+        at: (order.billedAt ?? new Date()).toISOString(),
+        title: `Paid order #${order.orderNumber}`,
+        detail: null,
+        meta: { totalAmount: order.totalAmount, orderId: order.id },
+      });
+    }
+    for (const msg of messages) {
+      events.push({
+        id: `msg:${msg.id}`,
+        kind: 'MESSAGE',
+        at: (msg.sentAt ?? msg.createdAt).toISOString(),
+        title: `${msg.channel} ${msg.status.toLowerCase()}`,
+        detail: msg.body.slice(0, 160),
+        meta: {
+          status: msg.status,
+          provider: msg.provider,
+          error: msg.error,
+          deliveredAt: msg.deliveredAt?.toISOString() ?? null,
+          readAt: msg.readAt?.toISOString() ?? null,
+        },
+      });
+    }
+    if (customer.notes?.trim()) {
+      events.push({
+        id: `legacy-notes:${customer.id}`,
+        kind: 'NOTE',
+        at: customer.createdAt.toISOString(),
+        title: 'Profile notes',
+        detail: customer.notes,
+        meta: { legacy: true },
+      });
+    }
+
+    events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+    return { events: events.slice(0, limit) };
+  }
+
+  async addNote(
+    branchId: string,
+    customerId: string,
+    userId: string,
+    dto: CustomerNoteDto,
+  ) {
+    await this.assertInBranch(branchId, customerId);
+    return this.prisma.customerNote.create({
+      data: {
+        branchId,
+        customerId,
+        body: dto.body.trim(),
+        createdByUserId: userId,
+      },
+      include: { createdBy: { select: { id: true, name: true } } },
+    });
+  }
+
+  async listFollowUps(branchId: string, customerId: string, openOnly = false) {
+    await this.assertInBranch(branchId, customerId);
+    return this.prisma.customerFollowUp.findMany({
+      where: {
+        branchId,
+        customerId,
+        ...(openOnly ? { doneAt: null } : {}),
+      },
+      orderBy: [{ doneAt: 'asc' }, { dueAt: 'asc' }, { createdAt: 'desc' }],
+      include: {
+        createdBy: { select: { id: true, name: true } },
+        completedBy: { select: { id: true, name: true } },
+      },
+    });
+  }
+
+  async createFollowUp(
+    branchId: string,
+    customerId: string,
+    userId: string,
+    dto: CustomerFollowUpDto,
+  ) {
+    await this.assertInBranch(branchId, customerId);
+    return this.prisma.customerFollowUp.create({
+      data: {
+        branchId,
+        customerId,
+        title: dto.title.trim(),
+        body: dto.body?.trim() || null,
+        dueAt: dto.dueAt ?? null,
+        createdByUserId: userId,
+      },
+      include: {
+        createdBy: { select: { id: true, name: true } },
+        completedBy: { select: { id: true, name: true } },
+      },
+    });
+  }
+
+  async completeFollowUp(
+    branchId: string,
+    customerId: string,
+    followUpId: string,
+    userId: string,
+  ) {
+    const row = await this.prisma.customerFollowUp.findFirst({
+      where: { id: followUpId, customerId, branchId },
+    });
+    if (!row) throw new NotFoundException('Follow-up not found');
+    if (row.doneAt) return row;
+    return this.prisma.customerFollowUp.update({
+      where: { id: followUpId },
+      data: { doneAt: new Date(), completedByUserId: userId },
+      include: {
+        createdBy: { select: { id: true, name: true } },
+        completedBy: { select: { id: true, name: true } },
+      },
+    });
+  }
+
+  async reopenFollowUp(branchId: string, customerId: string, followUpId: string) {
+    const row = await this.prisma.customerFollowUp.findFirst({
+      where: { id: followUpId, customerId, branchId },
+    });
+    if (!row) throw new NotFoundException('Follow-up not found');
+    return this.prisma.customerFollowUp.update({
+      where: { id: followUpId },
+      data: { doneAt: null, completedByUserId: null },
+      include: {
+        createdBy: { select: { id: true, name: true } },
+        completedBy: { select: { id: true, name: true } },
+      },
+    });
+  }
+
+  /** Open follow-ups due today or overdue across the branch (staff inbox). */
+  async dueFollowUps(branchId: string) {
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+    return this.prisma.customerFollowUp.findMany({
+      where: {
+        branchId,
+        doneAt: null,
+        OR: [{ dueAt: null }, { dueAt: { lte: end } }],
+      },
+      orderBy: [{ dueAt: 'asc' }, { createdAt: 'asc' }],
+      take: 50,
+      include: {
+        customer: { select: { id: true, name: true, phone: true } },
+        createdBy: { select: { id: true, name: true } },
+      },
+    });
   }
 
   private async restaurantId(branchId: string) {

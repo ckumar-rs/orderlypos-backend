@@ -4,6 +4,8 @@ export function kioskReceiptText(input: {
   lines: { quantity: number; name: string; lineTotal: string }[];
   total: string;
   paid: boolean;
+  /** From restaurant_settings — never hardcode pay methods in the receipt. */
+  unpaidHint?: string;
 }): string {
   const status = input.paid ? "PAID RECEIPT" : "NOT PAID RECEIPT";
   const lines = input.lines.map(
@@ -17,6 +19,6 @@ export function kioskReceiptText(input: {
     `Total ${input.total}`,
     input.paid
       ? "This order is paid."
-      : "This order is not paid. Pay at the counter.",
+      : (input.unpaidHint ?? "This order is not paid. Pay at the counter."),
   ].join("\n");
 }

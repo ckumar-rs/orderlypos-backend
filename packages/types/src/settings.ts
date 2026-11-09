@@ -64,6 +64,16 @@ export const restaurantSettingsSchema = z.object({
   payCard: z.boolean().optional(),
   payUpi: z.boolean().optional(),
   payOther: z.boolean().optional(),
+  // Stored in restaurant_settings (key/value), not as restaurant columns.
+  preferredPaymentMethod: z.enum(["UPI", "CASH", "CARD", "OTHER"]).optional(),
+  paymentMethodOrder: z
+    .array(z.enum(["UPI", "CASH", "CARD", "OTHER"]))
+    .min(1)
+    .max(8)
+    .optional(),
+  cashLabel: z.string().trim().min(1).max(20).optional(),
+  billPayLinkEnabled: z.boolean().optional(),
+  billPayLinkWhatsappMessage: z.string().trim().max(400).optional(),
   receiptWhatsApp: z.boolean().optional(),
   receiptEmailEnabled: z.boolean().optional(),
   receiptPrint: z.boolean().optional(),
@@ -75,6 +85,10 @@ export const restaurantSettingsSchema = z.object({
   waCloudAccessToken: z.string().max(400).optional().nullable(),
   waCloudTemplateName: z.string().trim().max(80).optional().nullable(),
   waCloudTemplateLang: z.string().trim().max(12).optional().nullable(),
+  bulkWaEnabled: z.boolean().optional(),
+  bulkWaBaseUrl: z.string().trim().max(300).optional().nullable(),
+  bulkWaApiKey: z.string().max(400).optional().nullable(),
+  bulkWaWebhookSecret: z.string().max(200).optional().nullable(),
   smsEnabled: z.boolean().optional(),
   smsProvider: z.enum(["MSG91", "TWILIO", "CUSTOM"]).optional().nullable(),
   smsBaseUrl: z.string().trim().max(300).optional().nullable(),
@@ -119,6 +133,32 @@ export const branchSettingsSchema = z.object({
   // Self-service kiosk: which service-mode buttons the start screen offers.
   kioskDineInEnabled: z.boolean().optional(),
   kioskTakeawayEnabled: z.boolean().optional(),
+  // Stored in branch_settings (key/value).
+  payBeforeKitchenKiosk: z.boolean().optional(),
+  payBeforeKitchenTakeaway: z.boolean().optional(),
+  guestPaidClaimEnabled: z.boolean().optional(),
+  guestCodRequestEnabled: z.boolean().optional(),
+  guestWaiterEnabled: z.boolean().optional(),
+  guestBillEnabled: z.boolean().optional(),
+  deliveryTrackingRadiusKm: z.coerce.number().min(0).max(200).optional(),
+  deliveryTrackingStaleMinutes: z.coerce.number().int().min(1).max(240).optional(),
+  deliveryTrackingLat: z.coerce.number().min(-90).max(90).nullable().optional(),
+  deliveryTrackingLng: z.coerce.number().min(-180).max(180).nullable().optional(),
+  // Team / HR (stored in branch_settings).
+  leaveAnnualDays: z.coerce.number().min(0).max(366).optional(),
+  leaveSickDays: z.coerce.number().min(0).max(366).optional(),
+  payrollStatutoryEnabled: z.boolean().optional(),
+  payrollPfRate: z.coerce.number().min(0).max(1).optional(),
+  payrollPfWageCeiling: z.coerce.number().min(0).optional(),
+  payrollEsiGrossLimit: z.coerce.number().min(0).optional(),
+  payrollEsiEmployeeRate: z.coerce.number().min(0).max(1).optional(),
+  payrollEsiEmployerRate: z.coerce.number().min(0).max(1).optional(),
+  // Accounting (stored in branch_settings).
+  expenseCategories: z.string().max(500).optional(),
+  expenseRequireApproval: z.boolean().optional(),
+  cashVarianceWarnAmount: z.coerce.number().min(0).optional(),
+  /** When true, net petty-cash OUT for the day counts against till expected cash. */
+  pettyCashInTillClose: z.boolean().optional(),
   // Thermal printer (direct ESC/POS): paper, code page and column override.
   printerPaperWidthMm: z.union([z.literal(58), z.literal(80)]).optional(),
   printerCodepage: z.enum(["CP437", "CP850", "CP858", "CP1252"]).optional(),
@@ -162,3 +202,72 @@ export const copyBranchMenuSchema = z.preprocess(
   }),
 );
 export type CopyBranchMenuDto = z.infer<typeof copyBranchMenuSchema>;
+
+export const FIELD_ENTITIES = [
+  "CUSTOMER",
+  "ORDER",
+  "MENU_ITEM",
+  "RESERVATION",
+  "SUPPLIER",
+  "EMPLOYEE",
+  "TABLE",
+] as const;
+
+export const customFieldSchema = z.object({
+  entity: z.enum(FIELD_ENTITIES).default("CUSTOMER"),
+  key: z.string().trim().min(1).max(40),
+  label: z.string().trim().min(1).max(80),
+});
+export type CustomFieldDto = z.infer<typeof customFieldSchema>;
+
+export const customFieldUpdateSchema = z.object({
+  key: z.string().trim().min(1).max(40).optional(),
+  label: z.string().trim().min(1).max(80).optional(),
+});
+export type CustomFieldUpdateDto = z.infer<typeof customFieldUpdateSchema>;
+
+export const ONBOARDING_STEPS = [
+  "business",
+  "branch",
+  "floor",
+  "menu",
+  "guests",
+  "done",
+] as const;
+export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
+
+export const onboardingConfigSchema = z.object({
+  labelBusiness: z.string().trim().max(40).optional(),
+  labelBranch: z.string().trim().max(40).optional(),
+  labelFloor: z.string().trim().max(40).optional(),
+  labelMenu: z.string().trim().max(40).optional(),
+  labelGuests: z.string().trim().max(40).optional(),
+  bodyBusiness: z.string().trim().max(200).optional(),
+  bodyBranch: z.string().trim().max(200).optional(),
+  bodyFloor: z.string().trim().max(200).optional(),
+  bodyMenu: z.string().trim().max(200).optional(),
+  bodyGuests: z.string().trim().max(200).optional(),
+  defaultFloorName: z.string().trim().max(80).optional(),
+  defaultTableCount: z.string().trim().max(4).optional(),
+  defaultTableCapacity: z.string().trim().max(4).optional(),
+  defaultCategoryName: z.string().trim().max(80).optional(),
+  defaultDishName: z.string().trim().max(80).optional(),
+  defaultDishPrice: z.string().trim().max(16).optional(),
+  defaultDishTaxPercent: z.string().trim().max(8).optional(),
+});
+export type OnboardingConfigDto = z.infer<typeof onboardingConfigSchema>;
+
+export const onboardingPatchSchema = z.object({
+  action: z.enum([
+    "advance",
+    "complete",
+    "skip",
+    "reopen",
+    "set_enabled",
+    "set_config",
+  ]),
+  step: z.enum(ONBOARDING_STEPS).optional(),
+  enabled: z.boolean().optional(),
+  config: onboardingConfigSchema.optional(),
+});
+export type OnboardingPatchDto = z.infer<typeof onboardingPatchSchema>;

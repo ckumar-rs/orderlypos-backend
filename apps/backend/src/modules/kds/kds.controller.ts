@@ -91,6 +91,17 @@ export class KdsController {
     return this.kdsService.expoBoard(branchId);
   }
 
+  /** Mark kitchen tickets older than the service window as served (bills stay open). */
+  @Auth('kds.manage')
+  @Post('clear-stale')
+  async clearStale(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.kdsService.clearStalePass(branchId, user.id);
+  }
+
   @Auth('kds.manage')
   @Post('expo/:orderId/assemble')
   async assemble(

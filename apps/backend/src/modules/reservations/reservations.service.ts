@@ -312,6 +312,39 @@ export class ReservationsService {
     }
   }
 
+  async update(
+    branchId: string,
+    id: string,
+    dto: {
+      customerName?: string;
+      guestCount?: number;
+      reservedAt?: Date;
+      specialRequests?: string | null;
+    },
+  ) {
+    const reservation = await this.prisma.reservation.findFirst({
+      where: { id, branchId },
+    });
+    if (!reservation) throw new NotFoundException('Reservation not found');
+    if (reservation.status === 'COMPLETED' || reservation.status === 'CANCELLED' || reservation.status === 'NO_SHOW') {
+      throw new BadRequestException('This reservation can no longer be edited');
+    }
+    const updated = await this.prisma.reservation.update({
+      where: { id },
+      data: {
+        ...(dto.customerName !== undefined ? { customerName: dto.customerName } : {}),
+        ...(dto.guestCount !== undefined ? { guestCount: dto.guestCount } : {}),
+        ...(dto.reservedAt !== undefined ? { reservedAt: dto.reservedAt } : {}),
+        ...(dto.specialRequests !== undefined ? { specialRequests: dto.specialRequests } : {}),
+      },
+    });
+    this.realtime.emitToBranch(branchId, 'reservation.updated', {
+      id: updated.id,
+      status: updated.status,
+    });
+    return updated;
+  }
+
   async updateStatus(
     branchId: string,
     id: string,

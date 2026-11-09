@@ -36,34 +36,54 @@ export interface StatutoryInput {
   monthDays: number;
 }
 
-const PF_RATE = 0.12;
-const PF_WAGE_CEILING = 15_000;
-const ESI_GROSS_LIMIT = 21_000;
-const ESI_EMPLOYEE = 0.0075;
-const ESI_EMPLOYER = 0.0325;
+export interface StatutoryRates {
+  pfRate: number;
+  pfWageCeiling: number;
+  esiGrossLimit: number;
+  esiEmployeeRate: number;
+  esiEmployerRate: number;
+}
+
+export const DEFAULT_STATUTORY_RATES: StatutoryRates = {
+  pfRate: 0.12,
+  pfWageCeiling: 15_000,
+  esiGrossLimit: 21_000,
+  esiEmployeeRate: 0.0075,
+  esiEmployerRate: 0.0325,
+};
+
 const STANDARD_DEDUCTION = 75_000;
 const REBATE_INCOME = 1_200_000;
 
 /**
- * India payroll estimate for a draft run. PF is 12% employee and 12%
- * employer on basic wages, capped at the ₹15,000 statutory ceiling,
- * pro-rated for a short period. ESI applies when the full-month gross is
- * ₹21,000 or less. TDS is the new-regime monthly share (Budget 2025
- * slabs, ₹75,000 standard deduction, rebate up to ₹12 lakh, 4% cess).
- * It is a draft figure for the till, not a filed return.
+ * India payroll estimate for a draft run. PF is employee and employer on
+ * basic wages, capped at the wage ceiling, pro-rated for a short period.
+ * ESI applies when the full-month gross is at or below the ESI limit.
+ * TDS is the new-regime monthly share (Budget 2025 slabs, ₹75,000 standard
+ * deduction, rebate up to ₹12 lakh, 4% cess). Draft figure only — not a
+ * filed return. Rates come from Admin Settings (branch_settings).
  */
-export function indiaStatutory(input: StatutoryInput) {
+export function indiaStatutory(
+  input: StatutoryInput,
+  rates: StatutoryRates = DEFAULT_STATUTORY_RATES,
+) {
   const earned = Math.max(input.periodGross, 0);
   const monthShare =
     input.monthDays > 0 ? input.periodDays / input.monthDays : 1;
-  const pfWage = Math.min(earned, round2(PF_WAGE_CEILING * monthShare));
-  const pfEmployee = round2(pfWage * PF_RATE);
+  const pfWage = Math.min(earned, round2(rates.pfWageCeiling * monthShare));
+  const pfEmployee = round2(pfWage * rates.pfRate);
   const pfEmployer = pfEmployee;
-  const esiApplies = input.monthlyGross > 0 && input.monthlyGross <= ESI_GROSS_LIMIT;
-  const esiEmployee = esiApplies ? round2(earned * ESI_EMPLOYEE) : 0;
-  const esiEmployer = esiApplies ? round2(earned * ESI_EMPLOYER) : 0;
+  const esiApplies =
+    input.monthlyGross > 0 && input.monthlyGross <= rates.esiGrossLimit;
+  const esiEmployee = esiApplies
+    ? round2(earned * rates.esiEmployeeRate)
+    : 0;
+  const esiEmployer = esiApplies
+    ? round2(earned * rates.esiEmployerRate)
+    : 0;
   const annual = round2(Math.max(input.monthlyGross, 0) * 12);
-  const annualTax = annual <= REBATE_INCOME ? 0 : incomeTax(annual - STANDARD_DEDUCTION);
+  const annualTax =
+    annual <= REBATE_INCOME ? 0 : incomeTax(annual - STANDARD_DEDUCTION);
   const tds = round2((annualTax / 12) * monthShare);
   return { pfEmployee, pfEmployer, esiEmployee, esiEmployer, tds };
 }
@@ -109,17 +129,26 @@ export function daysInMonthOf(date: string): number {
  *
  * The tip pool is split in proportion to hours worked; the last recipient
  * absorbs rounding so the shares always add up to the pool exactly.
+ *
+ * `statutory` is false to skip deductions, true for default India rates, or
+ * a rates object from Admin Settings.
  */
 export function computePayroll(
   periodStart: string,
   periodEnd: string,
   tipPool: number,
   staff: PayInput[],
-  statutory = false,
+  statutory: boolean | StatutoryRates = false,
 ): PayLineResult[] {
   const periodDays = daysInclusive(periodStart, periodEnd);
   const monthDays = daysInMonthOf(periodStart);
   const totalHours = staff.reduce((s, p) => s + p.hoursWorked, 0);
+  const rates: StatutoryRates | null =
+    statutory === false
+      ? null
+      : statutory === true
+        ? DEFAULT_STATUTORY_RATES
+        : statutory;
 
   const tipRecipients = staff.filter((p) => p.hoursWorked > 0);
   const tips = new Map<string, number>();
@@ -147,14 +176,26 @@ export function computePayroll(
     }
     const tipShare = tips.get(p.userId) ?? 0;
     const earned = round2(basePay - deduction);
-    const deductions = statutory
-      ? indiaStatutory({
-          monthlyGross: p.payType === 'HOURLY' ? round2((earned * monthDays) / periodDays) : p.rate,
-          periodGross: earned,
-          periodDays,
-          monthDays,
-        })
-      : { pfEmployee: 0, pfEmployer: 0, esiEmployee: 0, esiEmployer: 0, tds: 0 };
+    const deductions = rates
+      ? indiaStatutory(
+          {
+            monthlyGross:
+              p.payType === 'HOURLY'
+                ? round2((earned * monthDays) / periodDays)
+                : p.rate,
+            periodGross: earned,
+            periodDays,
+            monthDays,
+          },
+          rates,
+        )
+      : {
+          pfEmployee: 0,
+          pfEmployer: 0,
+          esiEmployee: 0,
+          esiEmployer: 0,
+          tds: 0,
+        };
     const employeeStatutory = round2(
       deductions.pfEmployee + deductions.esiEmployee + deductions.tds,
     );

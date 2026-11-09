@@ -81,6 +81,54 @@ export class PurchaseRequestsService {
     });
   }
 
+  async updateDraft(branchId: string, id: string, dto: PurchaseRequestDto) {
+    const request = await this.getPurchaseRequest(branchId, id);
+    if (request.status !== 'DRAFT') {
+      throw new BadRequestException('Only draft purchase requests can be edited');
+    }
+
+    const ingredientIds = dto.items.map((i) => i.ingredientId);
+    const ingredientCount = await this.prisma.ingredient.count({
+      where: { id: { in: ingredientIds }, branchId },
+    });
+    if (ingredientCount !== new Set(ingredientIds).size) {
+      throw new BadRequestException(
+        'One or more ingredients not found in this branch',
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.purchaseRequestItem.deleteMany({ where: { purchaseRequestId: id } });
+      return tx.purchaseRequest.update({
+        where: { id },
+        data: {
+          notes: dto.notes,
+          items: {
+            create: dto.items.map((i) => ({
+              ingredientId: i.ingredientId,
+              quantityRequested: i.quantityRequested,
+              notes: i.notes,
+            })),
+          },
+        },
+        include: {
+          items: { include: { ingredient: true } },
+          requestedBy: { select: { id: true, name: true } },
+          approvedBy: { select: { id: true, name: true } },
+        },
+      });
+    });
+  }
+
+  async deleteDraft(branchId: string, id: string) {
+    const request = await this.getPurchaseRequest(branchId, id);
+    if (request.status !== 'DRAFT') {
+      throw new BadRequestException('Only draft purchase requests can be deleted');
+    }
+    await this.prisma.purchaseRequest.delete({ where: { id } });
+    return { ok: true };
+  }
+
   async updateStatus(
     branchId: string,
     id: string,

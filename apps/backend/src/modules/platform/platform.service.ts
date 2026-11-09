@@ -133,6 +133,13 @@ export class PlatformService {
     });
   }
 
+  async deleteDevice(branchId: string, id: string) {
+    const row = await this.prisma.posDevice.findFirst({ where: { id, branchId } });
+    if (!row) throw new NotFoundException('Device not found');
+    await this.prisma.posDevice.delete({ where: { id } });
+    return { ok: true };
+  }
+
   async heartbeat(token: string | undefined, version?: string) {
     const row = await this.deviceByToken(token);
     return this.prisma.posDevice.update({
@@ -252,6 +259,52 @@ export class PlatformService {
     return field.entity;
   }
 
+  async updateField(
+    branchId: string,
+    fieldId: string,
+    input: { key?: string; label?: string },
+  ) {
+    const field = await this.prisma.customField.findFirst({
+      where: { id: fieldId, branchId },
+    });
+    if (!field) throw new NotFoundException('Field not found');
+    const key =
+      input.key !== undefined
+        ? input.key.trim().toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 40)
+        : undefined;
+    if (input.key !== undefined && !key) {
+      throw new BadRequestException('Give the field a short key');
+    }
+    const label =
+      input.label !== undefined ? input.label.trim().slice(0, 80) : undefined;
+    if (input.label !== undefined && !label) {
+      throw new BadRequestException('Give the field a label');
+    }
+    try {
+      return await this.prisma.customField.update({
+        where: { id: fieldId },
+        data: {
+          ...(key !== undefined ? { key } : {}),
+          ...(label !== undefined ? { label } : {}),
+        },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new BadRequestException('That key is already used on this record type');
+      }
+      throw err;
+    }
+  }
+
+  async deleteField(branchId: string, fieldId: string) {
+    const field = await this.prisma.customField.findFirst({
+      where: { id: fieldId, branchId },
+    });
+    if (!field) throw new NotFoundException('Field not found');
+    await this.prisma.customField.delete({ where: { id: fieldId } });
+    return { ok: true };
+  }
+
   async saveFieldValue(branchId: string, fieldId: string, entityId: string, value: string) {
     if (!entityId.trim()) throw new BadRequestException('Choose the record this value belongs to');
     const field = await this.prisma.customField.findFirst({ where: { id: fieldId, branchId } });
@@ -279,6 +332,38 @@ export class PlatformService {
         days: Math.min(366, Math.max(1, input.days)),
       },
     });
+  }
+
+  async updateSavedReport(
+    branchId: string,
+    id: string,
+    input: { name?: string; reportKey?: string; days?: number },
+  ) {
+    const saved = await this.prisma.savedReport.findFirst({
+      where: { id, branchId },
+    });
+    if (!saved) throw new NotFoundException('Saved report not found');
+    return this.prisma.savedReport.update({
+      where: { id },
+      data: {
+        ...(input.name !== undefined
+          ? { name: input.name.trim().slice(0, 80) }
+          : {}),
+        ...(input.reportKey !== undefined ? { reportKey: input.reportKey } : {}),
+        ...(input.days !== undefined
+          ? { days: Math.min(366, Math.max(1, input.days)) }
+          : {}),
+      },
+    });
+  }
+
+  async deleteSavedReport(branchId: string, id: string) {
+    const saved = await this.prisma.savedReport.findFirst({
+      where: { id, branchId },
+    });
+    if (!saved) throw new NotFoundException('Saved report not found');
+    await this.prisma.savedReport.delete({ where: { id } });
+    return { ok: true };
   }
 
   async runSavedReport(branchId: string, id: string) {
@@ -313,6 +398,61 @@ export class PlatformService {
   ) {
     const data = await this.ruleData(branchId, null, input);
     return this.prisma.automationRule.create({ data: { branchId, ...data } });
+  }
+
+  async updateRule(
+    branchId: string,
+    id: string,
+    input: {
+      name?: string;
+      trigger?: string;
+      actions?: unknown;
+      emailTo?: string;
+      phoneTo?: string;
+      webhookUrl?: string;
+      taskTitle?: string;
+      nextRuleId?: string;
+      active?: boolean;
+    },
+  ) {
+    const row = await this.prisma.automationRule.findFirst({
+      where: { id, branchId },
+    });
+    if (!row) throw new NotFoundException('Rule not found');
+    const data = await this.ruleData(branchId, id, {
+      name: input.name ?? row.name,
+      trigger: input.trigger ?? row.trigger,
+      actions: input.actions ?? row.actions,
+      emailTo: input.emailTo ?? row.emailTo ?? undefined,
+      phoneTo: input.phoneTo ?? row.phoneTo ?? undefined,
+      webhookUrl: input.webhookUrl ?? row.webhookUrl ?? undefined,
+      taskTitle: input.taskTitle ?? row.taskTitle ?? undefined,
+      nextRuleId: input.nextRuleId ?? row.nextRuleId ?? undefined,
+    });
+    return this.prisma.automationRule.update({
+      where: { id },
+      data: {
+        ...data,
+        ...(input.active !== undefined ? { active: input.active } : {}),
+      },
+    });
+  }
+
+  async deleteRule(branchId: string, id: string) {
+    const row = await this.prisma.automationRule.findFirst({
+      where: { id, branchId },
+    });
+    if (!row) throw new NotFoundException('Rule not found');
+    const linked = await this.prisma.automationRule.count({
+      where: { branchId, nextRuleId: id },
+    });
+    if (linked > 0) {
+      throw new BadRequestException(
+        'Another rule chains to this one — clear that link first',
+      );
+    }
+    await this.prisma.automationRule.delete({ where: { id } });
+    return { ok: true };
   }
 
   async setRuleActive(branchId: string, id: string, active: boolean) {

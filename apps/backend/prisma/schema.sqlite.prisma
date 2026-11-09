@@ -184,6 +184,7 @@ model Branch {
   reportSchedules   ReportSchedule[]
   cashClosings      CashClosing[]
   pettyCashEntries  PettyCashEntry[]
+  periodLocks       AccountingPeriodLock[]
   coupons           Coupon[]
   promotions        Promotion[]
   campaigns         Campaign[]
@@ -409,6 +410,7 @@ model User {
   expensesCreated       Expense[]
   expensesDecided       Expense[]        @relation("ExpenseDecider")
   pettyCashEntries      PettyCashEntry[]
+  periodLocks           AccountingPeriodLock[] @relation("PeriodLockedBy")
 
   purchaseRequestsRequested PurchaseRequest[]   @relation("PurchaseRequestRequestedBy")
   purchaseRequestsApproved  PurchaseRequest[]   @relation("PurchaseRequestApprovedBy")
@@ -2310,10 +2312,11 @@ model Expense {
   category     String
   amount       Decimal
   note         String?
+  vendor       String?
   // Paid out of the till: counted against expected cash at day close,
   // and only after the expense is approved.
   paidFromCash Boolean  @default(false)
-  status       String @default("APPROVED")
+  status       String @default("PENDING")
   decidedById  String?
   decidedBy    User?    @relation("ExpenseDecider", fields: [decidedById], references: [id], onDelete: SetNull)
   decidedAt    DateTime?
@@ -2321,9 +2324,24 @@ model Expense {
   createdById String
   createdBy   User     @relation(fields: [createdById], references: [id])
   createdAt   DateTime @default(now())
+  attachments ExpenseAttachment[]
 
   @@index([branchId, spentOn])
   @@map("expenses")
+}
+
+model ExpenseAttachment {
+  id        String   @id @default(cuid())
+  expenseId String
+  expense   Expense  @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  fileName  String
+  mimeType  String
+  size      Int
+  data      Bytes
+  createdAt DateTime @default(now())
+
+  @@index([expenseId])
+  @@map("expense_attachments")
 }
 
 model LedgerAccount {
@@ -2450,6 +2468,8 @@ model CashClosing {
   cashExpenses Decimal  @default(0)
   expectedCash Decimal
   countedCash  Decimal
+  bankDrop     Decimal  @default(0)
+  safeDrop     Decimal  @default(0)
   variance     Decimal
   note         String?
 
@@ -2458,6 +2478,21 @@ model CashClosing {
 
   @@unique([branchId, businessDate])
   @@map("cash_closings")
+}
+
+model AccountingPeriodLock {
+  id         String   @id @default(cuid())
+  branchId   String
+  branch     Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  fromDate   DateTime
+  toDate     DateTime
+  reason     String?
+  lockedById String
+  lockedBy   User     @relation("PeriodLockedBy", fields: [lockedById], references: [id])
+  lockedAt   DateTime @default(now())
+
+  @@index([branchId, fromDate, toDate])
+  @@map("accounting_period_locks")
 }
 
 // A separate cash box from the till. IN adds to the float, OUT spends it.

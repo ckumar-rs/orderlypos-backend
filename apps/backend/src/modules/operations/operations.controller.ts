@@ -21,9 +21,11 @@ import {
   documentSchema,
   documentUpdateSchema,
   equipmentSchema,
+  equipmentUpdateSchema,
   serviceLogSchema,
   type DocumentDto,
   type EquipmentDto,
+  type EquipmentUpdateDto,
   type ServiceLogDto,
   type SessionUser,
 } from '@nodedr-restaurant/types';
@@ -65,6 +67,19 @@ export class OperationsController {
   ) {
     await this.access(u, branchId);
     return this.ops.createEquipment(branchId, body);
+  }
+
+  @Auth('operations.manage')
+  @Patch('equipment/:id')
+  @UsePipes(new ZodValidationPipe(equipmentUpdateSchema))
+  async updateEquipment(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: EquipmentUpdateDto,
+  ) {
+    await this.access(u, branchId);
+    return this.ops.updateEquipment(branchId, id, body);
   }
 
   @Auth('operations.manage')

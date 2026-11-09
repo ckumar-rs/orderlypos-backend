@@ -106,6 +106,16 @@ export class DeliveryController {
   }
 
   @Auth('delivery.manage')
+  @Get('live')
+  async live(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+  ) {
+    await this.branchAccess.assertAccess(u.restaurantId, branchId);
+    return this.delivery.live(branchId);
+  }
+
+  @Auth('delivery.manage')
   @AuditAction('delivery.driver_assigned', 'Order')
   @Patch(':orderId/assign')
   @UsePipes(new ZodValidationPipe(assignDriverSchema))

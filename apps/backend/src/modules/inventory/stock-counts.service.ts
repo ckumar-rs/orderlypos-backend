@@ -77,6 +77,19 @@ export class StockCountsService {
     return this.withVariance(created);
   }
 
+  async deleteDraft(branchId: string, id: string) {
+    const count = await this.prisma.stockCount.findFirst({
+      where: { id, branchId },
+      select: { id: true, status: true },
+    });
+    if (!count) throw new NotFoundException('Stock count not found');
+    if (count.status !== 'DRAFT') {
+      throw new BadRequestException('Only draft counts can be deleted');
+    }
+    await this.prisma.stockCount.delete({ where: { id } });
+    return { ok: true };
+  }
+
   async post(branchId: string, userId: string, id: string) {
     return this.prisma.$transaction(async (tx) => {
       const count = await tx.stockCount.findFirst({

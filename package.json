@@ -1,12 +1,13 @@
 {
-  "name": "orderlypos-backend",
-  "private": true,
-  "packageManager": "pnpm@11.10.0",
-  "engines": {
-    "node": ">=22"
-  },
-  "scripts": {
-    "build": "pnpm --filter @nodedr-restaurant/types build && pnpm --filter @nodedr-restaurant/backend exec prisma generate && pnpm --filter @nodedr-restaurant/backend build",
-    "start": "pnpm --filter @nodedr-restaurant/backend exec prisma migrate deploy && pnpm --filter @nodedr-restaurant/backend start:prod"
-  }
+    "name":  "orderlypos-backend",
+    "private":  true,
+    "packageManager":  "pnpm@11.10.0",
+    "engines":  {
+                    "node":  "\u003e=22"
+                },
+    "scripts":  {
+                    "build":  "pnpm --filter @nodedr-restaurant/types build \u0026\u0026 pnpm --filter @nodedr-restaurant/backend exec prisma generate \u0026\u0026 pnpm --filter @nodedr-restaurant/backend build",
+                    "start":  "pnpm --filter @nodedr-restaurant/backend exec prisma migrate deploy \u0026\u0026 pnpm --filter @nodedr-restaurant/backend start:prod",
+                    "db:migrate:both":  "node ./scripts/migrate-both.mjs"
+                }
 }

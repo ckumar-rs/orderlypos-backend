@@ -92,6 +92,40 @@ export class ReportSchedulesService {
     });
   }
 
+  async update(
+    branchId: string,
+    id: string,
+    dto: Partial<{
+      frequency: ReportFrequency;
+      format: string;
+      recipients: string[];
+      isActive: boolean;
+    }>,
+  ) {
+    await this.get(branchId, id);
+    if (dto.format !== undefined && !isExportFormat(dto.format)) {
+      throw new BadRequestException('Format must be csv, xlsx or pdf');
+    }
+    let recipients: string[] | undefined;
+    if (dto.recipients !== undefined) {
+      recipients = [
+        ...new Set(dto.recipients.map((r) => r.trim().toLowerCase())),
+      ];
+      if (!recipients.length || recipients.some((r) => !EMAIL.test(r))) {
+        throw new BadRequestException('Enter valid recipient email addresses');
+      }
+    }
+    return this.prisma.reportSchedule.update({
+      where: { id },
+      data: {
+        ...(dto.frequency !== undefined ? { frequency: dto.frequency } : {}),
+        ...(dto.format !== undefined ? { format: dto.format } : {}),
+        ...(recipients !== undefined ? { recipients } : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+      },
+    });
+  }
+
   async setActive(branchId: string, id: string, isActive: boolean) {
     await this.get(branchId, id);
     return this.prisma.reportSchedule.update({

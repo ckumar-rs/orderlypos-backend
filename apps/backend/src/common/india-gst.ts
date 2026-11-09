@@ -82,3 +82,23 @@ export function inclusiveGstLine(charged: number, ratePercent: number): { taxabl
   const taxableRaw = charged / (1 + ratePercent / 100);
   return { taxable: round2(taxableRaw), tax: round2((taxableRaw * ratePercent) / 100) };
 }
+
+/** Tax added on top of an exclusive price. */
+export function exclusiveGstLine(charged: number, ratePercent: number): { taxable: number; tax: number } {
+  if (!(charged > 0)) return { taxable: 0, tax: 0 };
+  if (!(ratePercent > 0)) return { taxable: round2(charged), tax: 0 };
+  return {
+    taxable: round2(charged),
+    tax: round2((charged * ratePercent) / 100),
+  };
+}
+
+export function gstLine(
+  charged: number,
+  ratePercent: number,
+  taxMode: 'INCLUSIVE' | 'EXCLUSIVE' = 'INCLUSIVE',
+): { taxable: number; tax: number } {
+  return taxMode === 'EXCLUSIVE'
+    ? exclusiveGstLine(charged, ratePercent)
+    : inclusiveGstLine(charged, ratePercent);
+}

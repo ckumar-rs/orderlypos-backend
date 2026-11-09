@@ -46,6 +46,19 @@ export class TablesService {
     return this.prisma.floor.update({ where: { id }, data: dto });
   }
 
+  async deleteFloor(branchId: string, id: string) {
+    const floor = await this.prisma.floor.findFirst({
+      where: { id, branchId },
+      include: { _count: { select: { tables: true } } },
+    });
+    if (!floor) throw new NotFoundException('Floor not found');
+    if (floor._count.tables > 0) {
+      throw new BadRequestException('Move or delete every table on this floor first');
+    }
+    await this.prisma.floor.delete({ where: { id } });
+    return { ok: true };
+  }
+
   async createTable(branchId: string, dto: TableDto) {
     await this.assertFloorInBranch(branchId, dto.floorId);
     const table = await this.prisma.table.create({ data: dto });

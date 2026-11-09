@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UsePipes,
 } from '@nestjs/common';
@@ -27,6 +28,10 @@ const createSchema = z.object({
   format: z.enum(['csv', 'xlsx', 'pdf']),
   recipients: z.array(z.string().email()).min(1).max(10),
 });
+const updateSchema = createSchema
+  .omit({ reportKey: true })
+  .partial()
+  .extend({ isActive: z.boolean().optional() });
 const activeSchema = z.object({ isActive: z.boolean() });
 
 @ApiTags('reports')
@@ -63,6 +68,19 @@ export class ReportSchedulesController {
     assertCanViewReport(u.permissions, body.reportKey);
     await this.branchAccess.assertAccess(u.restaurantId, branchId);
     return this.schedules.create(branchId, body);
+  }
+
+  @Auth('reports.access', 'data.export')
+  @Put(':id')
+  @UsePipes(new ZodValidationPipe(updateSchema))
+  async update(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: z.infer<typeof updateSchema>,
+  ) {
+    await this.branchAccess.assertAccess(u.restaurantId, branchId);
+    return this.schedules.update(branchId, id, body);
   }
 
   @Auth('reports.access', 'data.export')

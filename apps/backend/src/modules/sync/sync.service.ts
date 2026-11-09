@@ -204,7 +204,8 @@ export class SyncService {
     });
     let queued = 0;
     for (const branch of branches) {
-      const [orders, payments, movements, journals] = await Promise.all([
+      const [orders, payments, movements, journals, expenses, closings] =
+        await Promise.all([
         this.prisma.order.findMany({
           where: { branchId: branch.id, status: 'PAID' },
           select: {
@@ -252,6 +253,36 @@ export class SyncService {
           },
           take: 200,
           orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.expense.findMany({
+          where: { branchId: branch.id },
+          select: {
+            id: true,
+            spentOn: true,
+            category: true,
+            amount: true,
+            vendor: true,
+            status: true,
+            paidFromCash: true,
+            createdAt: true,
+          },
+          take: 300,
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.cashClosing.findMany({
+          where: { branchId: branch.id },
+          select: {
+            id: true,
+            businessDate: true,
+            expectedCash: true,
+            countedCash: true,
+            bankDrop: true,
+            safeDrop: true,
+            variance: true,
+            createdAt: true,
+          },
+          take: 120,
+          orderBy: { businessDate: 'desc' },
         }),
       ]);
       queued += await this.enqueue(
@@ -314,6 +345,42 @@ export class SyncService {
             postedOn: row.postedOn.toISOString(),
             narration: row.narration,
             sourceType: row.sourceType,
+            branchName: branch.name,
+          },
+        })),
+      );
+      queued += await this.enqueue(
+        branch.id,
+        expenses.map((row) => ({
+          entityType: 'EXPENSE',
+          entityId: row.id,
+          occurredAt: row.createdAt,
+          payload: {
+            id: row.id,
+            spentOn: row.spentOn.toISOString().slice(0, 10),
+            category: row.category,
+            amount: Number(row.amount),
+            vendor: row.vendor,
+            status: row.status,
+            paidFromCash: row.paidFromCash,
+            branchName: branch.name,
+          },
+        })),
+      );
+      queued += await this.enqueue(
+        branch.id,
+        closings.map((row) => ({
+          entityType: 'CASH_CLOSING',
+          entityId: row.id,
+          occurredAt: row.createdAt,
+          payload: {
+            id: row.id,
+            businessDate: row.businessDate.toISOString().slice(0, 10),
+            expectedCash: Number(row.expectedCash),
+            countedCash: Number(row.countedCash),
+            bankDrop: Number(row.bankDrop),
+            safeDrop: Number(row.safeDrop),
+            variance: Number(row.variance),
             branchName: branch.name,
           },
         })),

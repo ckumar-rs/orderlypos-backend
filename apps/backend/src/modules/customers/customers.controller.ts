@@ -11,12 +11,21 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import {
+  customerFollowUpSchema,
+  customerImportSchema,
+  customerNoteSchema,
   customerSchema,
   employeeDiscountPolicySchema,
+  employeeDiscountPolicyUpdateSchema,
   loyaltyRuleSchema,
   membershipTierSchema,
   rewardSchema,
+  rewardUpdateSchema,
   rfmLabelSchema,
+  type CustomerFollowUpDto,
+  type CustomerImportDto,
+  type CustomerNoteDto,
+  type EmployeeDiscountPolicyUpdateDto,
   type SessionUser,
 } from '@nodedr-restaurant/types';
 import { Auth } from '../../common/decorators/auth.decorator';
@@ -64,6 +73,19 @@ export class CustomersController {
   ) {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     return this.customersService.createTier(branchId, body as never);
+  }
+
+  @Auth('customers.manage')
+  @Patch('tiers/:id')
+  @UsePipes(new ZodValidationPipe(membershipTierSchema))
+  async updateTier(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.updateTier(branchId, id, body as never);
   }
 
   @Auth('customers.manage')
@@ -198,6 +220,19 @@ export class CustomersController {
   }
 
   @Auth('customers.manage')
+  @Patch('rewards/:id')
+  @UsePipes(new ZodValidationPipe(rewardUpdateSchema))
+  async updateReward(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.updateReward(branchId, id, body as never);
+  }
+
+  @Auth('customers.manage')
   @Delete('rewards/:id')
   async removeReward(
     @CurrentUser() user: SessionUser,
@@ -231,6 +266,19 @@ export class CustomersController {
   }
 
   @Auth('customers.manage')
+  @Patch('employee-discounts/:id')
+  @UsePipes(new ZodValidationPipe(employeeDiscountPolicyUpdateSchema))
+  async updateEmployeeDiscount(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: EmployeeDiscountPolicyUpdateDto,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.updateEmployeeDiscount(branchId, id, body);
+  }
+
+  @Auth('customers.manage')
   @Delete('employee-discounts/:id')
   async removeEmployeeDiscount(
     @CurrentUser() user: SessionUser,
@@ -251,6 +299,110 @@ export class CustomersController {
   ) {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     return this.customersService.redeemReward(branchId, id, rewardId);
+  }
+
+  @Auth('customers.manage')
+  @Get('follow-ups/due')
+  async dueFollowUps(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.dueFollowUps(branchId);
+  }
+
+  @Auth('customers.manage')
+  @Post('import')
+  @UsePipes(new ZodValidationPipe(customerImportSchema))
+  async importCsv(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Body() body: CustomerImportDto,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.importCsv(branchId, body.csv);
+  }
+
+  @Auth('customers.manage')
+  @Get(':id/timeline')
+  async timeline(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.timeline(branchId, id);
+  }
+
+  @Auth('customers.manage')
+  @Post(':id/notes')
+  @UsePipes(new ZodValidationPipe(customerNoteSchema))
+  async addNote(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: CustomerNoteDto,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.addNote(branchId, id, user.id, body);
+  }
+
+  @Auth('customers.manage')
+  @Get(':id/follow-ups')
+  async listFollowUps(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Query('openOnly') openOnly?: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.listFollowUps(
+      branchId,
+      id,
+      openOnly === '1' || openOnly === 'true',
+    );
+  }
+
+  @Auth('customers.manage')
+  @Post(':id/follow-ups')
+  @UsePipes(new ZodValidationPipe(customerFollowUpSchema))
+  async createFollowUp(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: CustomerFollowUpDto,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.createFollowUp(branchId, id, user.id, body);
+  }
+
+  @Auth('customers.manage')
+  @Post(':id/follow-ups/:followUpId/complete')
+  async completeFollowUp(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Param('followUpId') followUpId: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.completeFollowUp(
+      branchId,
+      id,
+      followUpId,
+      user.id,
+    );
+  }
+
+  @Auth('customers.manage')
+  @Post(':id/follow-ups/:followUpId/reopen')
+  async reopenFollowUp(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Param('followUpId') followUpId: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.reopenFollowUp(branchId, id, followUpId);
   }
 
   @Auth('customers.manage')

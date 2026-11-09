@@ -37,6 +37,14 @@ import { resolveProfile } from './escpos/encoder';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import {
+  branchOrderingFlags,
+  readBranchSettingsMap,
+  readRestaurantSettingsMap,
+  restaurantPaymentPrefs,
+  seedBranchSettings,
+  seedRestaurantSettings,
+} from '../settings/settings-kv';
+import {
   computeOrderTotals,
   priceLine,
   round2,
@@ -267,15 +275,19 @@ export class OrdersService {
       if (replay) return this.getOrder(branchId, replay);
     }
     const channel = options.channel ?? 'STAFF';
+    const branchRow = await this.prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { autoConfirmOrders: true },
+    });
+    await seedBranchSettings(this.prisma, branchId);
+    const ordering = branchOrderingFlags(
+      await readBranchSettingsMap(this.prisma, branchId),
+    );
     // Online orders wait for a staff member to accept them unless this
     // branch is set to auto-confirm (Settings > Online orders).
     let acceptance: 'NOT_REQUIRED' | 'PENDING' | 'ACCEPTED' = 'NOT_REQUIRED';
     if (options.requireAcceptance) {
-      const branch = await this.prisma.branch.findUnique({
-        where: { id: branchId },
-        select: { autoConfirmOrders: true },
-      });
-      acceptance = branch?.autoConfirmOrders ? 'ACCEPTED' : 'PENDING';
+      acceptance = branchRow?.autoConfirmOrders ? 'ACCEPTED' : 'PENDING';
     }
     const menuItemIds = [...new Set(dto.items.map((i) => i.menuItemId))];
     if (channel === 'ONLINE')
@@ -287,6 +299,14 @@ export class OrdersService {
     if (menuItems.length !== menuItemIds.length) {
       throw new BadRequestException(
         'One or more menu items are invalid for this branch',
+      );
+    }
+    const eightySixed = menuItems.filter((item) => !item.isActive);
+    if (eightySixed.length > 0) {
+      throw new BadRequestException(
+        `${eightySixed.map((item) => item.name).join(', ')} ${
+          eightySixed.length === 1 ? 'is' : 'are'
+        } marked 86 / unavailable`,
       );
     }
     await this.menu.assertItemsOnLiveMenu(branchId, menuItemIds);
@@ -464,7 +484,17 @@ export class OrdersService {
           discountAmount: 0,
           totalAmount: totals.subtotal,
           scheduledFor,
-          heldAt: dto.held && channel === 'STAFF' ? new Date() : null,
+          // Settings table: pay-before-kitchen holds tickets until checkout.
+          heldAt:
+            dto.held && channel === 'STAFF'
+              ? new Date()
+              : (dto.type === 'KIOSK' && ordering.payBeforeKitchenKiosk) ||
+                  (dto.type === 'TAKEAWAY' &&
+                    channel === 'ONLINE' &&
+                    acceptance !== 'PENDING' &&
+                    ordering.payBeforeKitchenTakeaway)
+                ? new Date()
+                : null,
           ...(delivery
             ? {
                 deliveryZoneId: delivery.deliveryZoneId,
@@ -629,6 +659,14 @@ export class OrdersService {
     if (menuItems.length !== menuItemIds.length) {
       throw new BadRequestException(
         'One or more menu items are invalid for this branch',
+      );
+    }
+    const eightySixed = menuItems.filter((item) => !item.isActive);
+    if (eightySixed.length > 0) {
+      throw new BadRequestException(
+        `${eightySixed.map((item) => item.name).join(', ')} ${
+          eightySixed.length === 1 ? 'is' : 'are'
+        } marked 86 / unavailable`,
       );
     }
     await this.menu.assertItemsOnLiveMenu(branchId, menuItemIds);
@@ -1723,7 +1761,7 @@ export class OrdersService {
       );
       if (replay) return this.checkoutResult(branchId, orderId);
     }
-    if (order.status !== 'OPEN') {
+    if (order.status !== 'OPEN' && order.status !== 'BILLED') {
       throw new BadRequestException('Order is not open for checkout');
     }
     // Accepting is a separate decision from paying: an incoming order nobody
@@ -1738,6 +1776,10 @@ export class OrdersService {
       where: { id: branchId },
       include: { restaurant: true },
     });
+    await seedRestaurantSettings(this.prisma, branch.restaurantId);
+    const { cashLabel } = restaurantPaymentPrefs(
+      await readRestaurantSettingsMap(this.prisma, branch.restaurantId),
+    );
     const allowed: Record<string, boolean> = {
       CASH: branch.restaurant.payCash,
       CARD: branch.restaurant.payCard,
@@ -1747,7 +1789,7 @@ export class OrdersService {
     for (const payment of dto.payments) {
       if (payment.method in allowed && !allowed[payment.method]) {
         throw new BadRequestException(
-          `${payment.method} is not enabled for this restaurant`,
+          `${payment.method === 'CASH' ? cashLabel : payment.method} is not enabled for this restaurant`,
         );
       }
     }
@@ -2056,6 +2098,7 @@ export class OrdersService {
         : { balanceDue: settlement.balanceAfter }),
     });
     if (settlement.fullyPaid) {
+      await this.releaseKitchenAfterPay(branchId, orderId);
       if (order.tableId) {
         this.realtime.emitToBranch(branchId, 'table.updated', {
           id: order.tableId,
@@ -2810,6 +2853,28 @@ export class OrdersService {
       });
       this.realtime.emitToBranch(branchId, 'kot.updated', { id: row.kot.id });
     }
+  }
+
+  /** Pay-before-kitchen: clear hold and print KOTs once the bill is paid. */
+  private async releaseKitchenAfterPay(branchId: string, orderId: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, branchId },
+      include: { items: { select: { id: true, menuItemId: true } }, _count: { select: { kots: true } } },
+    });
+    if (!order) return;
+    if (!order.heldAt && order._count.kots > 0) return;
+    await this.prisma.$transaction(async (tx) => {
+      if (order.heldAt) {
+        await tx.order.update({
+          where: { id: order.id },
+          data: { heldAt: null },
+        });
+      }
+      if (order._count.kots === 0 && order.items.length > 0) {
+        await this.generateKots(tx, order.id, branchId, order.items);
+      }
+    });
+    this.realtime.emitToBranch(branchId, 'order.updated', { id: order.id });
   }
 
   private async generateKots(

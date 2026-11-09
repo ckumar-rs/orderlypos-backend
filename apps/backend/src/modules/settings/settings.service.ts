@@ -13,6 +13,26 @@ import {
 import { AuditService } from '../../audit/audit.service';
 import { sealSecret } from '../../auth/totp';
 import { PrismaService } from '../../prisma/prisma.service';
+import { EmailService } from '../email/email.service';
+import {
+  BranchSettingKey,
+  RestaurantSettingKey,
+  DEFAULT_RESTAURANT_SETTINGS,
+  type BranchSettingKeyName,
+} from './setting-keys';
+import {
+  branchAccountingSettings,
+  branchDeliveryTracking,
+  branchOrderingFlags,
+  branchTeamHrSettings,
+  readBranchSettingsMap,
+  readRestaurantSettingsMap,
+  restaurantPaymentPrefs,
+  seedBranchSettings,
+  seedRestaurantSettings,
+  setBranchSetting,
+  setRestaurantSetting,
+} from './settings-kv';
 
 @Injectable()
 export class SettingsService {
@@ -20,6 +40,7 @@ export class SettingsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
+    private readonly email: EmailService,
   ) {}
 
   private keyMaterial() {
@@ -40,6 +61,8 @@ export class SettingsService {
       smtpPasswordSealed,
       syncHqTokenSealed,
       waCloudAccessTokenSealed,
+      bulkWaApiKeySealed,
+      bulkWaWebhookSecretSealed,
       smsApiKeySealed,
       smsApiSecretSealed,
       aiTokenSealed,
@@ -49,6 +72,8 @@ export class SettingsService {
       smtpPasswordSealed?: string | null;
       syncHqTokenSealed?: string | null;
       waCloudAccessTokenSealed?: string | null;
+      bulkWaApiKeySealed?: string | null;
+      bulkWaWebhookSecretSealed?: string | null;
       smsApiKeySealed?: string | null;
       smsApiSecretSealed?: string | null;
       aiTokenSealed?: string | null;
@@ -59,6 +84,8 @@ export class SettingsService {
       smtpConfigured: Boolean(smtpPasswordSealed && restaurant.smtpHost && restaurant.smtpFrom),
       syncHqTokenConfigured: Boolean(syncHqTokenSealed),
       waCloudTokenConfigured: Boolean(waCloudAccessTokenSealed),
+      bulkWaApiKeyConfigured: Boolean(bulkWaApiKeySealed),
+      bulkWaWebhookSecretConfigured: Boolean(bulkWaWebhookSecretSealed),
       smsApiKeyConfigured: Boolean(smsApiKeySealed),
       aiTokenConfigured: Boolean(aiTokenSealed),
       weatherApiKeyConfigured: Boolean(weatherApiKeySealed),
@@ -76,7 +103,30 @@ export class SettingsService {
     if (!restaurant || !branch) {
       throw new NotFoundException('Restaurant or branch not found');
     }
-    return { restaurant: this.publicRestaurant(restaurant), branch };
+    await seedRestaurantSettings(this.prisma, restaurantId);
+    await seedBranchSettings(this.prisma, branchId);
+    const restaurantMap = await readRestaurantSettingsMap(this.prisma, restaurantId);
+    const branchMap = await readBranchSettingsMap(this.prisma, branchId);
+    const payment = restaurantPaymentPrefs(restaurantMap);
+    const ordering = branchOrderingFlags(branchMap);
+    const tracking = branchDeliveryTracking(branchMap);
+    const teamHr = branchTeamHrSettings(branchMap);
+    const accounting = branchAccountingSettings(branchMap);
+    return {
+      restaurant: {
+        ...this.publicRestaurant(restaurant),
+        preferredPaymentMethod: payment.preferred || null,
+        paymentMethodOrder: payment.order,
+        cashLabel: payment.cashLabel,
+      },
+      branch: {
+        ...branch,
+        ...ordering,
+        ...tracking,
+        ...teamHr,
+        ...accounting,
+      },
+    };
   }
 
   async updateRestaurant(
@@ -89,12 +139,42 @@ export class SettingsService {
       tallyLedgers,
       syncHqToken,
       waCloudAccessToken,
+      bulkWaApiKey,
+      bulkWaWebhookSecret,
       smsApiKey,
       smsApiSecret,
       aiToken,
       weatherApiKey,
+      preferredPaymentMethod,
+      paymentMethodOrder,
+      cashLabel,
       ...rest
     } = dto;
+    if (preferredPaymentMethod !== undefined) {
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.preferredPaymentMethod,
+        preferredPaymentMethod,
+      );
+    }
+    if (paymentMethodOrder !== undefined) {
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.paymentMethodOrder,
+        paymentMethodOrder.join(','),
+      );
+    }
+    if (cashLabel !== undefined) {
+      await setRestaurantSetting(
+        this.prisma,
+        restaurantId,
+        RestaurantSettingKey.cashLabel,
+        cashLabel.trim() ||
+          DEFAULT_RESTAURANT_SETTINGS[RestaurantSettingKey.cashLabel],
+      );
+    }
     const data: Record<string, unknown> = { ...rest };
     if (typeof rest.tallyHost === 'string' && !rest.tallyHost.trim()) {
       data.tallyHost = null;
@@ -107,6 +187,7 @@ export class SettingsService {
       'waCloudPhoneNumberId',
       'waCloudTemplateName',
       'waCloudTemplateLang',
+      'bulkWaBaseUrl',
       'smsBaseUrl',
       'smsSenderId',
       'smsCountryPrefix',
@@ -125,6 +206,15 @@ export class SettingsService {
     }
     if (waCloudAccessToken) {
       data.waCloudAccessTokenSealed = sealSecret(waCloudAccessToken, this.keyMaterial());
+    }
+    if (bulkWaApiKey) {
+      data.bulkWaApiKeySealed = sealSecret(bulkWaApiKey, this.keyMaterial());
+    }
+    if (bulkWaWebhookSecret) {
+      data.bulkWaWebhookSecretSealed = sealSecret(
+        bulkWaWebhookSecret,
+        this.keyMaterial(),
+      );
     }
     if (smsApiKey) {
       data.smsApiKeySealed = sealSecret(smsApiKey, this.keyMaterial());
@@ -168,31 +258,177 @@ export class SettingsService {
   }
 
   async updateBranch(branchId: string, userId: string, dto: BranchSettingsDto) {
+    const kvWrites: Array<[BranchSettingKeyName, string | undefined]> = [
+      [BranchSettingKey.payBeforeKitchenKiosk, boolToSetting(dto.payBeforeKitchenKiosk)],
+      [BranchSettingKey.payBeforeKitchenTakeaway, boolToSetting(dto.payBeforeKitchenTakeaway)],
+      [BranchSettingKey.guestPaidClaimEnabled, boolToSetting(dto.guestPaidClaimEnabled)],
+      [BranchSettingKey.guestCodRequestEnabled, boolToSetting(dto.guestCodRequestEnabled)],
+      [BranchSettingKey.guestWaiterEnabled, boolToSetting(dto.guestWaiterEnabled)],
+      [BranchSettingKey.guestBillEnabled, boolToSetting(dto.guestBillEnabled)],
+      [
+        BranchSettingKey.deliveryTrackingRadiusKm,
+        dto.deliveryTrackingRadiusKm !== undefined
+          ? String(dto.deliveryTrackingRadiusKm)
+          : undefined,
+      ],
+      [
+        BranchSettingKey.deliveryTrackingStaleMinutes,
+        dto.deliveryTrackingStaleMinutes !== undefined
+          ? String(dto.deliveryTrackingStaleMinutes)
+          : undefined,
+      ],
+      [
+        BranchSettingKey.deliveryTrackingLat,
+        dto.deliveryTrackingLat !== undefined
+          ? dto.deliveryTrackingLat == null
+            ? ''
+            : String(dto.deliveryTrackingLat)
+          : undefined,
+      ],
+      [
+        BranchSettingKey.deliveryTrackingLng,
+        dto.deliveryTrackingLng !== undefined
+          ? dto.deliveryTrackingLng == null
+            ? ''
+            : String(dto.deliveryTrackingLng)
+          : undefined,
+      ],
+      [
+        BranchSettingKey.leaveAnnualDays,
+        dto.leaveAnnualDays !== undefined ? String(dto.leaveAnnualDays) : undefined,
+      ],
+      [
+        BranchSettingKey.leaveSickDays,
+        dto.leaveSickDays !== undefined ? String(dto.leaveSickDays) : undefined,
+      ],
+      [
+        BranchSettingKey.payrollStatutoryEnabled,
+        boolToSetting(dto.payrollStatutoryEnabled),
+      ],
+      [
+        BranchSettingKey.payrollPfRate,
+        dto.payrollPfRate !== undefined ? String(dto.payrollPfRate) : undefined,
+      ],
+      [
+        BranchSettingKey.payrollPfWageCeiling,
+        dto.payrollPfWageCeiling !== undefined
+          ? String(dto.payrollPfWageCeiling)
+          : undefined,
+      ],
+      [
+        BranchSettingKey.payrollEsiGrossLimit,
+        dto.payrollEsiGrossLimit !== undefined
+          ? String(dto.payrollEsiGrossLimit)
+          : undefined,
+      ],
+      [
+        BranchSettingKey.payrollEsiEmployeeRate,
+        dto.payrollEsiEmployeeRate !== undefined
+          ? String(dto.payrollEsiEmployeeRate)
+          : undefined,
+      ],
+      [
+        BranchSettingKey.payrollEsiEmployerRate,
+        dto.payrollEsiEmployerRate !== undefined
+          ? String(dto.payrollEsiEmployerRate)
+          : undefined,
+      ],
+      [
+        BranchSettingKey.expenseCategories,
+        dto.expenseCategories !== undefined ? dto.expenseCategories : undefined,
+      ],
+      [
+        BranchSettingKey.expenseRequireApproval,
+        boolToSetting(dto.expenseRequireApproval),
+      ],
+      [
+        BranchSettingKey.cashVarianceWarnAmount,
+        dto.cashVarianceWarnAmount !== undefined
+          ? String(dto.cashVarianceWarnAmount)
+          : undefined,
+      ],
+      [
+        BranchSettingKey.pettyCashInTillClose,
+        boolToSetting(dto.pettyCashInTillClose),
+      ],
+    ];
+    for (const [key, value] of kvWrites) {
+      if (value !== undefined) {
+        await setBranchSetting(this.prisma, branchId, key, value);
+      }
+    }
+    const {
+      payBeforeKitchenKiosk: _a,
+      payBeforeKitchenTakeaway: _b,
+      guestPaidClaimEnabled: _c,
+      guestCodRequestEnabled: _d,
+      guestWaiterEnabled: _e,
+      guestBillEnabled: _f,
+      deliveryTrackingRadiusKm: _g,
+      deliveryTrackingStaleMinutes: _h,
+      deliveryTrackingLat: _i,
+      deliveryTrackingLng: _j,
+      leaveAnnualDays: _k,
+      leaveSickDays: _l,
+      payrollStatutoryEnabled: _m,
+      payrollPfRate: _n,
+      payrollPfWageCeiling: _o,
+      payrollEsiGrossLimit: _p,
+      payrollEsiEmployeeRate: _q,
+      payrollEsiEmployerRate: _r,
+      expenseCategories: _s,
+      expenseRequireApproval: _t,
+      cashVarianceWarnAmount: _u,
+      pettyCashInTillClose: _v,
+      ...columnDto
+    } = dto;
+    void _a;
+    void _b;
+    void _c;
+    void _d;
+    void _e;
+    void _f;
+    void _g;
+    void _h;
+    void _i;
+    void _j;
+    void _k;
+    void _l;
+    void _m;
+    void _n;
+    void _o;
+    void _p;
+    void _q;
+    void _r;
+    void _s;
+    void _t;
+    void _u;
+    void _v;
     if (
-      dto.kioskDineInEnabled !== undefined ||
-      dto.kioskTakeawayEnabled !== undefined
+      columnDto.kioskDineInEnabled !== undefined ||
+      columnDto.kioskTakeawayEnabled !== undefined
     ) {
       const current = await this.prisma.branch.findUnique({
         where: { id: branchId },
         select: { kioskDineInEnabled: true, kioskTakeawayEnabled: true },
       });
-      const dineIn = dto.kioskDineInEnabled ?? current?.kioskDineInEnabled;
+      const dineIn = columnDto.kioskDineInEnabled ?? current?.kioskDineInEnabled;
       const takeaway =
-        dto.kioskTakeawayEnabled ?? current?.kioskTakeawayEnabled;
+        columnDto.kioskTakeawayEnabled ?? current?.kioskTakeawayEnabled;
       if (!dineIn && !takeaway) {
         throw new BadRequestException(
           'The kiosk needs at least one of dine-in or takeaway',
         );
       }
     }
-    if (dto.printerConnection === 'NETWORK' || dto.printerHost !== undefined) {
+    if (columnDto.printerConnection === 'NETWORK' || columnDto.printerHost !== undefined) {
       const current = await this.prisma.branch.findUnique({
         where: { id: branchId },
         select: { printerConnection: true, printerHost: true },
       });
-      const connection = dto.printerConnection ?? current?.printerConnection;
+      const connection = columnDto.printerConnection ?? current?.printerConnection;
       const host =
-        dto.printerHost !== undefined ? dto.printerHost : current?.printerHost;
+        columnDto.printerHost !== undefined ? columnDto.printerHost : current?.printerHost;
       if (connection === 'NETWORK' && !host) {
         throw new BadRequestException(
           'Enter the printer address (IP or host name) for network printing',
@@ -204,9 +440,9 @@ export class SettingsService {
     // exclusive) — a picker that silently kept the old mode across a
     // regime switch would quietly mis-price every item on that branch.
     const data =
-      dto.taxRegime && dto.taxMode === undefined
-        ? { ...dto, taxMode: TAX_REGIME_PRESETS[dto.taxRegime].defaultMode }
-        : dto;
+      columnDto.taxRegime && columnDto.taxMode === undefined
+        ? { ...columnDto, taxMode: TAX_REGIME_PRESETS[columnDto.taxRegime].defaultMode }
+        : columnDto;
     const updated = await this.prisma.branch.update({
       where: { id: branchId },
       data,
@@ -218,7 +454,14 @@ export class SettingsService {
       entityId: branchId,
       metadata: { changes: dto },
     });
-    return updated;
+    const branchMap = await readBranchSettingsMap(this.prisma, branchId);
+    return {
+      ...updated,
+      ...branchOrderingFlags(branchMap),
+      ...branchDeliveryTracking(branchMap),
+      ...branchTeamHrSettings(branchMap),
+      ...branchAccountingSettings(branchMap),
+    };
   }
 
   /**
@@ -256,4 +499,61 @@ export class SettingsService {
     });
     return { kioskToken };
   }
+
+  async setPickupDisplayToken(
+    branchId: string,
+    userId: string,
+    action: 'enable' | 'rotate' | 'disable',
+  ) {
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { pickupDisplayToken: true },
+    });
+    if (!branch) throw new NotFoundException('Branch not found');
+    const pickupDisplayToken =
+      action === 'disable'
+        ? null
+        : action === 'enable' && branch.pickupDisplayToken
+          ? branch.pickupDisplayToken
+          : randomBytes(16).toString('hex');
+    await this.prisma.branch.update({
+      where: { id: branchId },
+      data: { pickupDisplayToken },
+    });
+    await this.audit.record({
+      userId,
+      action: `settings.pickup_${action}`,
+      entity: 'Branch',
+      entityId: branchId,
+      metadata: { enabled: pickupDisplayToken !== null },
+    });
+    return { pickupDisplayToken };
+  }
+
+  async sendTestEmail(restaurantId: string, userId: string, to?: string) {
+    const recipient = (to ?? '').trim().toLowerCase();
+    if (!recipient || !recipient.includes('@')) {
+      throw new BadRequestException('Enter a valid email address to receive the test message');
+    }
+    try {
+      const result = await this.email.sendTest(recipient, restaurantId);
+      await this.audit.record({
+        userId,
+        action: 'settings.email_test',
+        entity: 'Restaurant',
+        entityId: restaurantId,
+        metadata: { to: recipient, provider: result.provider },
+      });
+      return result;
+    } catch (err) {
+      throw new BadRequestException(
+        err instanceof Error ? err.message : 'Could not send the test email',
+      );
+    }
+  }
+}
+
+function boolToSetting(value: boolean | undefined) {
+  if (value === undefined) return undefined;
+  return value ? 'true' : 'false';
 }

@@ -145,7 +145,7 @@ export class LedgerService {
       }),
       this.prisma.expense.groupBy({
         by: ['category'],
-        where: { branchId, spentOn: { gte: from, lt: to } },
+        where: { branchId, spentOn: { gte: from, lt: to }, status: 'APPROVED' },
         _sum: { amount: true },
       }),
     ]);
@@ -427,7 +427,7 @@ export class LedgerService {
         _sum: { amount: true },
       }),
       this.prisma.expense.aggregate({
-        where: { branchId, spentOn: { lte: endDate } },
+        where: { branchId, spentOn: { lte: endDate }, status: 'APPROVED' },
         _sum: { amount: true },
       }),
       this.prisma.supplierPayment.aggregate({

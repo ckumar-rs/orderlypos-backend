@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   UsePipes,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
@@ -21,6 +22,12 @@ const createSchema = z.object({
   url: z.string().trim().url().max(500),
   events: z.array(z.string()).min(1),
   description: z.string().trim().max(120).optional(),
+});
+
+const updateSchema = z.object({
+  url: z.string().trim().url().max(500).optional(),
+  events: z.array(z.string()).min(1).optional(),
+  description: z.string().trim().max(120).nullable().optional(),
 });
 
 @ApiTags('webhooks')
@@ -49,6 +56,18 @@ export class WebhooksController {
     @Body() body: z.infer<typeof createSchema>,
   ) {
     return this.webhooks.create(u.restaurantId, body);
+  }
+
+  @Auth('settings.manage')
+  @AuditAction('webhook.updated', 'WebhookEndpoint')
+  @Put(':id')
+  @UsePipes(new ZodValidationPipe(updateSchema))
+  update(
+    @CurrentUser() u: SessionUser,
+    @Param('id') id: string,
+    @Body() body: z.infer<typeof updateSchema>,
+  ) {
+    return this.webhooks.update(u.restaurantId, id, body);
   }
 
   @Auth('settings.manage')

@@ -14,6 +14,10 @@ import type {
 import { isSqlite, stringList } from '../../common/sqlite';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
+import {
+  branchDeliveryTracking,
+  readBranchSettingsMap,
+} from '../settings/settings-kv';
 import { WebhooksService } from '../webhooks/webhooks.service';
 
 // Forward-only lifecycle; FAILED is reachable from any open state.
@@ -196,6 +200,79 @@ export class DeliveryService {
   }
 
   /**
+   * Open deliveries with latest GPS + stale / geofence flags for the live map.
+   */
+  async live(branchId: string) {
+    const tracking = branchDeliveryTracking(
+      await readBranchSettingsMap(this.prisma, branchId),
+    );
+    const staleMs = Math.max(1, tracking.deliveryTrackingStaleMinutes) * 60_000;
+    const now = Date.now();
+    const orders = await this.prisma.order.findMany({
+      where: {
+        branchId,
+        type: 'DELIVERY',
+        status: { not: 'CANCELLED' },
+        deliveryStatus: { in: ['ASSIGNED', 'PICKED_UP'] },
+      },
+      include: ORDER_INCLUDE,
+      orderBy: { createdAt: 'asc' },
+      take: 200,
+    });
+    const recentEvents = await this.prisma.deliveryTrackingEvent.findMany({
+      where: {
+        orderId: { in: orders.map((o) => o.id) },
+        createdAt: { gte: new Date(now - 24 * 60 * 60_000) },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    const latestByOrder = new Map<string, (typeof recentEvents)[number]>();
+    for (const event of recentEvents) {
+      if (!latestByOrder.has(event.orderId)) latestByOrder.set(event.orderId, event);
+    }
+    return {
+      branch: {
+        lat: tracking.deliveryTrackingLat,
+        lng: tracking.deliveryTrackingLng,
+        radiusKm: tracking.deliveryTrackingRadiusKm,
+        staleMinutes: tracking.deliveryTrackingStaleMinutes,
+      },
+      deliveries: orders.map((order) => {
+        const at = order.driverLocationAt
+          ? order.driverLocationAt.getTime()
+          : null;
+        const staleGps =
+          order.deliveryStatus === 'PICKED_UP' &&
+          (at == null || now - at > staleMs);
+        if (staleGps) {
+          void this.maybeRecordStale(order.id);
+        }
+        const lastEvent = latestByOrder.get(order.id);
+        return {
+          id: order.id,
+          orderNumber: order.orderNumber,
+          deliveryStatus: order.deliveryStatus,
+          guestName: order.guestName,
+          deliveryAddress: order.deliveryAddress,
+          driver: order.driver,
+          driverLat: order.driverLat,
+          driverLng: order.driverLng,
+          driverLocationAt: order.driverLocationAt,
+          trackingToken: order.trackingToken,
+          staleGps,
+          lastEvent: lastEvent
+            ? {
+                type: lastEvent.type,
+                createdAt: lastEvent.createdAt,
+              }
+            : null,
+        };
+      }),
+    };
+  }
+
+  /**
    * The assigned driver (or a delivery manager standing in for a demo)
    * records where this device is. Nothing is read unless this is called.
    */
@@ -214,9 +291,19 @@ export class DeliveryService {
     if (order.driverId !== userId && !canManage) {
       throw new ForbiddenException('Only the assigned driver can share this location');
     }
+    const prevPing = await this.prisma.driverPing.findFirst({
+      where: { orderId },
+      orderBy: { recordedAt: 'desc' },
+    });
     await this.prisma.driverPing.create({
       data: { orderId, lat: dto.lat, lng: dto.lng },
     });
+    await this.maybeGeofenceEvent(
+      branchId,
+      orderId,
+      prevPing ? { lat: Number(prevPing.lat), lng: Number(prevPing.lng) } : null,
+      { lat: dto.lat, lng: dto.lng },
+    );
     return this.save(branchId, orderId, {
       driverLat: dto.lat,
       driverLng: dto.lng,
@@ -226,25 +313,133 @@ export class DeliveryService {
 
   async trail(branchId: string, orderId: string) {
     const order = await this.getDelivery(branchId, orderId);
-    const pings = await this.prisma.driverPing.findMany({
-      where: { orderId },
-      orderBy: { recordedAt: 'asc' },
-    });
-    return { trackingToken: order.trackingToken, pings };
+    const [pings, events, tracking] = await Promise.all([
+      this.prisma.driverPing.findMany({
+        where: { orderId },
+        orderBy: { recordedAt: 'asc' },
+      }),
+      this.prisma.deliveryTrackingEvent.findMany({
+        where: { orderId },
+        orderBy: { createdAt: 'asc' },
+      }),
+      readBranchSettingsMap(this.prisma, branchId).then(branchDeliveryTracking),
+    ]);
+    return {
+      trackingToken: order.trackingToken,
+      branch: {
+        lat: tracking.deliveryTrackingLat,
+        lng: tracking.deliveryTrackingLng,
+        radiusKm: tracking.deliveryTrackingRadiusKm,
+      },
+      pings: pings.map((p) => ({
+        lat: Number(p.lat),
+        lng: Number(p.lng),
+        recordedAt: p.recordedAt,
+      })),
+      events: events.map((e) => ({
+        type: e.type,
+        lat: e.lat == null ? null : Number(e.lat),
+        lng: e.lng == null ? null : Number(e.lng),
+        createdAt: e.createdAt,
+      })),
+    };
   }
 
   async publicTrack(token: string) {
     const order = await this.prisma.order.findFirst({
       where: { trackingToken: token },
-      select: { id: true, orderNumber: true, deliveryStatus: true },
+      select: {
+        id: true,
+        orderNumber: true,
+        deliveryStatus: true,
+        driverLat: true,
+        driverLng: true,
+        driverLocationAt: true,
+        branchId: true,
+      },
     });
     if (!order) throw new NotFoundException('Tracking link not found');
-    const pings = await this.prisma.driverPing.findMany({
-      where: { orderId: order.id },
-      orderBy: { recordedAt: 'asc' },
-      select: { lat: true, lng: true, recordedAt: true },
+    const [pings, tracking] = await Promise.all([
+      this.prisma.driverPing.findMany({
+        where: { orderId: order.id },
+        orderBy: { recordedAt: 'asc' },
+        select: { lat: true, lng: true, recordedAt: true },
+      }),
+      readBranchSettingsMap(this.prisma, order.branchId).then(
+        branchDeliveryTracking,
+      ),
+    ]);
+    return {
+      orderNumber: order.orderNumber,
+      status: order.deliveryStatus,
+      driverLat: order.driverLat == null ? null : Number(order.driverLat),
+      driverLng: order.driverLng == null ? null : Number(order.driverLng),
+      driverLocationAt: order.driverLocationAt,
+      branch: {
+        lat: tracking.deliveryTrackingLat,
+        lng: tracking.deliveryTrackingLng,
+        radiusKm: tracking.deliveryTrackingRadiusKm,
+      },
+      pings: pings.map((p) => ({
+        lat: Number(p.lat),
+        lng: Number(p.lng),
+        recordedAt: p.recordedAt,
+      })),
+    };
+  }
+
+  private async maybeGeofenceEvent(
+    branchId: string,
+    orderId: string,
+    prev: { lat: number; lng: number } | null,
+    next: { lat: number; lng: number },
+  ) {
+    const tracking = branchDeliveryTracking(
+      await readBranchSettingsMap(this.prisma, branchId),
+    );
+    if (
+      tracking.deliveryTrackingLat == null ||
+      tracking.deliveryTrackingLng == null ||
+      tracking.deliveryTrackingRadiusKm <= 0
+    ) {
+      return;
+    }
+    const origin = {
+      lat: tracking.deliveryTrackingLat,
+      lng: tracking.deliveryTrackingLng,
+    };
+    const radiusM = tracking.deliveryTrackingRadiusKm * 1000;
+    const wasInside =
+      prev == null ? null : haversineMeters(origin, prev) <= radiusM;
+    const isInside = haversineMeters(origin, next) <= radiusM;
+    if (wasInside === null || wasInside === isInside) return;
+    const type = isInside ? 'GEOFENCE_ENTER' : 'GEOFENCE_EXIT';
+    await this.prisma.deliveryTrackingEvent.create({
+      data: {
+        orderId,
+        type,
+        lat: next.lat,
+        lng: next.lng,
+      },
     });
-    return { orderNumber: order.orderNumber, status: order.deliveryStatus, pings };
+    this.realtime.emitToBranch(branchId, 'delivery.tracking', {
+      orderId,
+      type,
+    });
+  }
+
+  private async maybeRecordStale(orderId: string) {
+    const recent = await this.prisma.deliveryTrackingEvent.findFirst({
+      where: {
+        orderId,
+        type: 'GPS_STALE',
+        createdAt: { gte: new Date(Date.now() - 30 * 60_000) },
+      },
+    });
+    if (recent) return;
+    await this.prisma.deliveryTrackingEvent.create({
+      data: { orderId, type: 'GPS_STALE' },
+    });
   }
 
   private async getDelivery(branchId: string, orderId: string) {
@@ -275,4 +470,20 @@ export class DeliveryService {
     });
     return updated;
   }
+}
+
+function haversineMeters(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+) {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }

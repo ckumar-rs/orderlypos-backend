@@ -47,7 +47,7 @@ export class MenuService {
   listCategories(branchId: string) {
     return this.prisma.menuCategory.findMany({
       where: { branchId },
-      orderBy: { sortOrder: 'asc' },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       include: { _count: { select: { items: true } } },
     });
   }
@@ -114,7 +114,57 @@ export class MenuService {
     });
   }
 
-  listCourses(branchId: string) {
+  async updateStation(
+    branchId: string,
+    id: string,
+    dto: { name?: string; printerName?: string; role?: string },
+  ) {
+    const station = await this.prisma.kitchenStation.findFirst({
+      where: { id, branchId },
+    });
+    if (!station) throw new NotFoundException('Kitchen station not found');
+    return this.prisma.kitchenStation.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.printerName !== undefined ? { printerName: dto.printerName } : {}),
+        ...(dto.role !== undefined
+          ? { role: dto.role === 'EXPO' ? 'EXPO' : 'COOK' }
+          : {}),
+      },
+    });
+  }
+
+  async deleteStation(branchId: string, id: string) {
+    const station = await this.prisma.kitchenStation.findFirst({
+      where: { id, branchId },
+    });
+    if (!station) throw new NotFoundException('Kitchen station not found');
+    const inUse = await this.prisma.menuItem.count({ where: { stationId: id } });
+    if (inUse > 0) {
+      throw new BadRequestException(
+        'Station is assigned to menu items — reassign those dishes first',
+      );
+    }
+    await this.prisma.kitchenStation.delete({ where: { id } });
+    return { ok: true };
+  }
+
+  async listCourses(branchId: string) {
+    const existing = await this.prisma.kitchenCourse.findMany({
+      where: { branchId },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    });
+    if (existing.length > 0) return existing;
+    // First visit: seed a usable course set so Pass "Fire next" can hold
+    // desserts/mains until fired without a blank Kitchen setup.
+    await this.prisma.kitchenCourse.createMany({
+      data: [
+        { branchId, name: 'Starters', sortOrder: 10, holdByDefault: false },
+        { branchId, name: 'Mains', sortOrder: 20, holdByDefault: false },
+        { branchId, name: 'Desserts', sortOrder: 30, holdByDefault: true },
+      ],
+    });
     return this.prisma.kitchenCourse.findMany({
       where: { branchId },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
@@ -131,6 +181,27 @@ export class MenuService {
         name: dto.name,
         sortOrder: dto.sortOrder ?? 0,
         holdByDefault: Boolean(dto.holdByDefault),
+      },
+    });
+  }
+
+  async updateCourse(
+    branchId: string,
+    id: string,
+    dto: { name?: string; sortOrder?: number; holdByDefault?: boolean },
+  ) {
+    const course = await this.prisma.kitchenCourse.findFirst({
+      where: { id, branchId },
+    });
+    if (!course) throw new NotFoundException('Kitchen course not found');
+    return this.prisma.kitchenCourse.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+        ...(dto.holdByDefault !== undefined
+          ? { holdByDefault: Boolean(dto.holdByDefault) }
+          : {}),
       },
     });
   }
@@ -160,7 +231,7 @@ export class MenuService {
         branchId,
         ...(categoryIds ? { categoryId: { in: categoryIds } } : {}),
       },
-      orderBy: { sortOrder: 'asc' },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       include: {
         category: true,
         station: true,
@@ -189,13 +260,88 @@ export class MenuService {
     return item;
   }
 
+  /** Next free SKU for the branch, e.g. MI-0001. Existing codes are left alone. */
+  private async nextSku(branchId: string, taken = new Set<string>()) {
+    const rows = await this.prisma.menuItem.findMany({
+      where: { branchId, sku: { not: null } },
+      select: { sku: true },
+    });
+    for (const row of rows) {
+      if (row.sku) taken.add(row.sku.toUpperCase());
+    }
+    let n = 1;
+    while (n < 100_000) {
+      const candidate = `MI-${String(n).padStart(4, '0')}`;
+      if (!taken.has(candidate)) {
+        taken.add(candidate);
+        return candidate;
+      }
+      n += 1;
+    }
+    throw new BadRequestException('Could not allocate a new SKU');
+  }
+
+  /** Fill blank SKUs for every dish on the branch. Already-set codes are kept. */
+  async ensureSkus(branchId: string, userId: string) {
+    const items = await this.prisma.menuItem.findMany({
+      where: { branchId },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }, { id: 'asc' }],
+      select: { id: true, name: true, sku: true },
+    });
+    const taken = new Set(
+      items
+        .map((item) => item.sku?.trim().toUpperCase())
+        .filter((sku): sku is string => Boolean(sku)),
+    );
+    const updates: { id: string; sku: string }[] = [];
+    for (const item of items) {
+      if (item.sku?.trim()) continue;
+      let n = 1;
+      let sku = '';
+      while (n < 100_000) {
+        const candidate = `MI-${String(n).padStart(4, '0')}`;
+        if (!taken.has(candidate)) {
+          sku = candidate;
+          taken.add(candidate);
+          break;
+        }
+        n += 1;
+      }
+      if (!sku) throw new BadRequestException('Could not allocate a new SKU');
+      updates.push({ id: item.id, sku });
+    }
+    for (const row of updates) {
+      await this.prisma.menuItem.update({
+        where: { id: row.id },
+        data: { sku: row.sku },
+      });
+      await this.catalog.markDirty(row.id);
+    }
+    if (updates.length) {
+      await this.audit.record({
+        userId,
+        action: 'menu_item.skus_ensured',
+        entity: 'Branch',
+        entityId: branchId,
+        metadata: { assigned: updates.length },
+      });
+    }
+    return {
+      assigned: updates.length,
+      total: items.length,
+      items: updates,
+    };
+  }
+
   async createItem(branchId: string, dto: MenuItemDto, userId?: string) {
     await this.assertPriceEdit(branchId, userId);
     const { modifierGroupIds, barcode, sizes, ...rest } = dto;
     await this.assertModifierGroupsInBranch(branchId, modifierGroupIds);
+    const sku = rest.sku?.trim() || (await this.nextSku(branchId));
     const created = await this.prisma.menuItem.create({
       data: {
         ...rest,
+        sku,
         barcode: barcode?.trim() || null,
         branchId,
         modifierGroups: {
@@ -221,6 +367,149 @@ export class MenuService {
     });
     await this.catalog.markDirty(created.id);
     return created;
+  }
+
+  async duplicateItem(branchId: string, id: string, userId: string) {
+    const source = await this.prisma.menuItem.findFirst({
+      where: { id, branchId },
+      include: {
+        sizes: { orderBy: { sortOrder: 'asc' } },
+        modifierGroups: { orderBy: { sortOrder: 'asc' } },
+        channelPrices: true,
+      },
+    });
+    if (!source) throw new NotFoundException('Menu item not found');
+    await this.assertPriceEdit(branchId, userId);
+
+    const maxSort = await this.prisma.menuItem.aggregate({
+      where: { branchId, categoryId: source.categoryId },
+      _max: { sortOrder: true },
+    });
+    const nextSort = (maxSort._max.sortOrder ?? -1) + 1;
+    const copyName = `${source.name} (copy)`.slice(0, 120);
+
+    const created = await this.prisma.menuItem.create({
+      data: {
+        branchId,
+        categoryId: source.categoryId,
+        stationId: source.stationId,
+        courseId: source.courseId,
+        name: copyName,
+        sku: await this.nextSku(branchId),
+        hsnCode: source.hsnCode,
+        description: source.description,
+        imageUrl: source.imageUrl,
+        price: source.price,
+        taxRatePercent: source.taxRatePercent,
+        costPrice: source.costPrice,
+        prepTimeMinutes: source.prepTimeMinutes,
+        calories: source.calories,
+        isVeg: source.isVeg,
+        isVegan: source.isVegan,
+        isJain: source.isJain,
+        isHalal: source.isHalal,
+        isGlutenFree: source.isGlutenFree,
+        spiceLevel: source.spiceLevel,
+        allergens: source.allergens,
+        availableFrom: source.availableFrom,
+        availableTo: source.availableTo,
+        isSeasonal: source.isSeasonal,
+        seasonStart: source.seasonStart,
+        seasonEnd: source.seasonEnd,
+        barcode: null,
+        soldByWeight: source.soldByWeight,
+        isActive: source.isActive,
+        isCombo: source.isCombo,
+        inventoryTracking: 'NONE',
+        stockIngredientId: null,
+        stockQuantityPerSale: source.stockQuantityPerSale,
+        halfPrice: source.halfPrice,
+        servings: source.servings,
+        yieldQuantity: source.yieldQuantity,
+        yieldUnit: source.yieldUnit,
+        instructions: source.instructions,
+        portionStep: source.portionStep,
+        sortOrder: nextSort,
+        modifierGroups: {
+          create: source.modifierGroups.map((row, index) => ({
+            modifierGroupId: row.modifierGroupId,
+            sortOrder: row.sortOrder ?? index,
+          })),
+        },
+        sizes: source.sizes.length
+          ? {
+              create: source.sizes.map((size, index) => ({
+                name: size.name,
+                price: size.price,
+                sortOrder: size.sortOrder ?? index,
+              })),
+            }
+          : undefined,
+        channelPrices: source.channelPrices.length
+          ? {
+              create: source.channelPrices.map((row) => ({
+                channelId: row.channelId,
+                price: row.price,
+              })),
+            }
+          : undefined,
+      },
+      include: {
+        category: true,
+        station: true,
+        course: true,
+        modifierGroups: {
+          include: { modifierGroup: { include: { modifiers: true } } },
+        },
+        sizes: { orderBy: { sortOrder: 'asc' } },
+        channelPrices: true,
+      },
+    });
+    await this.catalog.markDirty(created.id);
+    return created;
+  }
+
+  async reorderCategories(branchId: string, ids: string[]) {
+    const existing = await this.prisma.menuCategory.findMany({
+      where: { branchId },
+      select: { id: true },
+    });
+    const known = new Set(existing.map((row) => row.id));
+    if (ids.some((id) => !known.has(id))) {
+      throw new BadRequestException('One or more categories are invalid for this branch');
+    }
+    await this.prisma.$transaction(
+      ids.map((id, index) =>
+        this.prisma.menuCategory.update({
+          where: { id },
+          data: { sortOrder: index },
+        }),
+      ),
+    );
+    return this.listCategories(branchId);
+  }
+
+  async reorderItems(branchId: string, ids: string[], categoryId?: string) {
+    const existing = await this.prisma.menuItem.findMany({
+      where: {
+        branchId,
+        ...(categoryId ? { categoryId } : {}),
+        id: { in: ids },
+      },
+      select: { id: true },
+    });
+    if (existing.length !== new Set(ids).size) {
+      throw new BadRequestException('One or more items are invalid for this reorder');
+    }
+    await this.prisma.$transaction(
+      ids.map((id, index) =>
+        this.prisma.menuItem.update({
+          where: { id },
+          data: { sortOrder: index },
+        }),
+      ),
+    );
+    return this.listItems(branchId, categoryId);
   }
 
   async updateItem(
@@ -357,13 +646,35 @@ export class MenuService {
   }
 
   async updateModifierImage(branchId: string, id: string, imageUrl: string | null) {
+    return this.updateModifier(branchId, id, { imageUrl });
+  }
+
+  async updateModifier(
+    branchId: string,
+    id: string,
+    dto: {
+      name?: string;
+      priceAdjustment?: number;
+      imageUrl?: string | null;
+      isDefault?: boolean;
+      sortOrder?: number;
+    },
+  ) {
     const modifier = await this.prisma.modifier.findFirst({
       where: { id, group: { branchId } },
     });
     if (!modifier) throw new NotFoundException('Add-on not found');
     return this.prisma.modifier.update({
       where: { id },
-      data: { imageUrl },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.priceAdjustment !== undefined
+          ? { priceAdjustment: dto.priceAdjustment }
+          : {}),
+        ...(dto.imageUrl !== undefined ? { imageUrl: dto.imageUrl } : {}),
+        ...(dto.isDefault !== undefined ? { isDefault: dto.isDefault } : {}),
+        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+      },
     });
   }
 
@@ -922,6 +1233,74 @@ export class MenuService {
         demandQty: dto.demandQty ?? null,
         demandHours: dto.demandHours ?? null,
         isActive: dto.isActive ?? true,
+      },
+    });
+  }
+
+  async updatePriceRule(
+    branchId: string,
+    id: string,
+    dto: Partial<MenuPriceRuleDto>,
+    userId?: string,
+  ) {
+    await this.assertPriceEdit(branchId, userId);
+    const row = await this.prisma.menuPriceRule.findFirst({
+      where: { id, branchId },
+    });
+    if (!row) throw new NotFoundException('Price rule not found');
+    if (dto.menuItemId) {
+      const item = await this.prisma.menuItem.findFirst({
+        where: { id: dto.menuItemId, branchId },
+        select: { id: true },
+      });
+      if (!item) throw new BadRequestException('Dish not found');
+    }
+    if (dto.categoryId) await this.assertCategoryInBranch(branchId, dto.categoryId);
+    const stockBelow =
+      dto.stockBelow !== undefined ? dto.stockBelow : row.stockBelow;
+    const ingredientId =
+      dto.ingredientId !== undefined ? dto.ingredientId : row.ingredientId;
+    if (stockBelow != null && !ingredientId) {
+      throw new BadRequestException('Choose the ingredient for a stock price');
+    }
+    if (dto.ingredientId) {
+      const ingredient = await this.prisma.ingredient.findFirst({
+        where: { id: dto.ingredientId, branchId },
+        select: { id: true },
+      });
+      if (!ingredient) throw new BadRequestException('Ingredient not found');
+    }
+    return this.prisma.menuPriceRule.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.menuItemId !== undefined
+          ? { menuItemId: dto.menuItemId || null }
+          : {}),
+        ...(dto.categoryId !== undefined
+          ? { categoryId: dto.categoryId || null }
+          : {}),
+        ...(dto.ingredientId !== undefined
+          ? { ingredientId: dto.ingredientId || null }
+          : {}),
+        ...(dto.percent !== undefined ? { percent: dto.percent } : {}),
+        ...(dto.daysOfWeek !== undefined ? { daysOfWeek: dto.daysOfWeek } : {}),
+        ...(dto.startTime !== undefined
+          ? { startMinute: dto.startTime ? toMinutes(dto.startTime) : null }
+          : {}),
+        ...(dto.endTime !== undefined
+          ? { endMinute: dto.endTime ? toMinutes(dto.endTime) : null }
+          : {}),
+        ...(dto.stockBelow !== undefined
+          ? { stockBelow: dto.stockBelow ?? null }
+          : {}),
+        ...(dto.demandQty !== undefined
+          ? { demandQty: dto.demandQty ?? null }
+          : {}),
+        ...(dto.demandHours !== undefined
+          ? { demandHours: dto.demandHours ?? null }
+          : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
       },
     });
   }

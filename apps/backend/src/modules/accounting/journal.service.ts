@@ -24,6 +24,66 @@ export class JournalService {
     });
   }
 
+  /**
+   * Seeds a starter chart of accounts + common source maps when the branch
+   * has none. Safe to call repeatedly — skips codes/maps that already exist.
+   */
+  async ensureDefaultCoa(branchId: string) {
+    const defaults: {
+      code: string;
+      name: string;
+      type: 'ASSET' | 'LIABILITY' | 'EQUITY' | 'INCOME' | 'EXPENSE';
+      mapKey?: string;
+    }[] = [
+      { code: '1000', name: 'Cash', type: 'ASSET', mapKey: 'CASH' },
+      { code: '1010', name: 'Bank', type: 'ASSET', mapKey: 'BANK' },
+      { code: '1100', name: 'UPI clearing', type: 'ASSET', mapKey: 'UPI' },
+      { code: '1200', name: 'Card clearing', type: 'ASSET', mapKey: 'CARD' },
+      { code: '4000', name: 'Sales', type: 'INCOME', mapKey: 'SALES' },
+      { code: '5000', name: 'Operating expense', type: 'EXPENSE', mapKey: 'EXPENSE' },
+      { code: '5100', name: 'Cost of goods sold', type: 'EXPENSE', mapKey: 'COGS' },
+      { code: '3000', name: 'Owner equity', type: 'EQUITY' },
+    ];
+    const existing = await this.prisma.ledgerAccount.findMany({
+      where: { branchId },
+      select: { id: true, code: true },
+    });
+    const byCode = new Map(existing.map((a) => [a.code, a.id]));
+    let created = 0;
+    for (const row of defaults) {
+      if (byCode.has(row.code)) continue;
+      const account = await this.prisma.ledgerAccount.create({
+        data: {
+          branchId,
+          code: row.code,
+          name: row.name,
+          type: row.type,
+        },
+      });
+      byCode.set(row.code, account.id);
+      created += 1;
+    }
+    let maps = 0;
+    for (const row of defaults) {
+      if (!row.mapKey) continue;
+      const accountId = byCode.get(row.code);
+      if (!accountId) continue;
+      const before = await this.prisma.ledgerAccountMap.findUnique({
+        where: { branchId_sourceKey: { branchId, sourceKey: row.mapKey } },
+      });
+      if (before) continue;
+      await this.prisma.ledgerAccountMap.create({
+        data: { branchId, sourceKey: row.mapKey, accountId },
+      });
+      maps += 1;
+    }
+    return {
+      created,
+      maps,
+      accounts: await this.listAccounts(branchId),
+    };
+  }
+
   async createAccount(branchId: string, dto: LedgerAccountDto) {
     try {
       return await this.prisma.ledgerAccount.create({
@@ -55,15 +115,42 @@ export class JournalService {
       where: { id, branchId },
     });
     if (!row) throw new NotFoundException('Account not found');
-    return this.prisma.ledgerAccount.update({
-      where: { id },
-      data: {
-        ...(dto.code != null ? { code: dto.code.trim() } : {}),
-        ...(dto.name != null ? { name: dto.name.trim() } : {}),
-        ...(dto.type ? { type: dto.type } : {}),
-        ...(dto.isActive != null ? { isActive: dto.isActive } : {}),
+    try {
+      return await this.prisma.ledgerAccount.update({
+        where: { id },
+        data: {
+          ...(dto.code != null ? { code: dto.code.trim() } : {}),
+          ...(dto.name != null ? { name: dto.name.trim() } : {}),
+          ...(dto.type ? { type: dto.type } : {}),
+          ...(dto.isActive != null ? { isActive: dto.isActive } : {}),
+        },
+      });
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        throw new BadRequestException('That account code already exists');
+      }
+      throw err;
+    }
+  }
+
+  async deleteAccount(branchId: string, id: string) {
+    const row = await this.prisma.ledgerAccount.findFirst({
+      where: { id, branchId },
+      include: {
+        _count: { select: { lines: true, maps: true } },
       },
     });
+    if (!row) throw new NotFoundException('Account not found');
+    if (row._count.lines > 0 || row._count.maps > 0) {
+      throw new BadRequestException(
+        'This account is in use — remove journal lines and maps first',
+      );
+    }
+    await this.prisma.ledgerAccount.delete({ where: { id } });
+    return { ok: true };
   }
 
   listMaps(branchId: string) {
@@ -304,6 +391,38 @@ export class JournalService {
         ],
       },
       { sourceType: 'EXPENSE', sourceId: expense.id },
+    );
+  }
+
+  /** Posts a reversing voucher (debits↔credits) linked to the original. */
+  async reverseJournal(branchId: string, userId: string, id: string) {
+    const original = await this.prisma.journalVoucher.findFirst({
+      where: { id, branchId },
+      include: { lines: true },
+    });
+    if (!original) throw new NotFoundException('Journal voucher not found');
+    if (original.sourceType === 'REVERSE') {
+      throw new BadRequestException('A reversing voucher cannot be reversed again');
+    }
+    const already = await this.prisma.journalVoucher.findFirst({
+      where: { branchId, sourceType: 'REVERSE', sourceId: id },
+    });
+    if (already)
+      throw new BadRequestException('This voucher already has a reversal');
+    const postedOn = new Date().toISOString().slice(0, 10);
+    return this.postJournal(
+      branchId,
+      userId,
+      {
+        postedOn,
+        narration: `Reversal of ${original.number}: ${original.narration}`,
+        lines: original.lines.map((line) => ({
+          accountId: line.accountId,
+          debit: Number(line.credit),
+          credit: Number(line.debit),
+        })),
+      },
+      { sourceType: 'REVERSE', sourceId: id },
     );
   }
 

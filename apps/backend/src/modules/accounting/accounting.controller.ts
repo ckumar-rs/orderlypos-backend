@@ -1,31 +1,43 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   Res,
+  UploadedFile,
+  UseInterceptors,
   UsePipes,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
+import { memoryStorage } from 'multer';
 import { ApiTags } from '@nestjs/swagger';
 import {
+  cashClosingAdjustSchema,
   cashClosingSchema,
   expenseDecisionSchema,
   expenseSchema,
   journalVoucherSchema,
   ledgerAccountMapSchema,
   ledgerAccountSchema,
+  ledgerAccountUpdateSchema,
+  periodLockSchema,
   pettyCashSchema,
   tallyPushSchema,
+  type CashClosingAdjustDto,
   type CashClosingDto,
   type ExpenseDecisionDto,
   type ExpenseDto,
   type JournalVoucherDto,
   type LedgerAccountDto,
   type LedgerAccountMapDto,
+  type LedgerAccountUpdateDto,
+  type PeriodLockDto,
   type PettyCashDto,
   type SessionUser,
   type TallyPushDto,
@@ -64,7 +76,7 @@ export class AccountingController {
     return this.accounting.listExpenses(branchId, from, to);
   }
 
-  @Auth('accounting.manage')
+  @Auth('expense.create')
   @AuditAction('expense.created', 'Expense')
   @Post('expenses')
   @UsePipes(new ZodValidationPipe(expenseSchema))
@@ -75,6 +87,71 @@ export class AccountingController {
   ) {
     await this.access(u, branchId);
     return this.accounting.createExpense(branchId, u.id, body);
+  }
+
+  @Auth('expense.create')
+  @AuditAction('expense.attachment', 'Expense')
+  @Post('expenses/:id/attachments')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+    }),
+  )
+  async attachExpenseFile(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    await this.access(u, branchId);
+    if (!file) throw new BadRequestException('Choose a file (max 5 MB)');
+    return this.accounting.addExpenseAttachment(branchId, id, file);
+  }
+
+  @Auth('accounting.manage')
+  @Get('expenses/:id/attachments/:fileId')
+  async downloadExpenseFile(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Param('fileId') fileId: string,
+    @Res() res: Response,
+  ) {
+    await this.access(u, branchId);
+    const file = await this.accounting.getExpenseAttachment(branchId, id, fileId);
+    res.setHeader('Content-Type', file.mimeType);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${file.fileName.replace(/"/g, '')}"`,
+    );
+    res.send(Buffer.from(file.data));
+  }
+
+  @Auth('accounting.manage')
+  @Delete('expenses/:id/attachments/:fileId')
+  async deleteExpenseFile(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Param('fileId') fileId: string,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.deleteExpenseAttachment(branchId, id, fileId);
+  }
+
+  @Auth('accounting.manage')
+  @AuditAction('expense.updated', 'Expense')
+  @Patch('expenses/:id')
+  @UsePipes(new ZodValidationPipe(expenseSchema))
+  async updateExpense(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: ExpenseDto,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.updateExpense(branchId, id, body);
   }
 
   @Auth('accounting.manage')
@@ -133,6 +210,32 @@ export class AccountingController {
   }
 
   @Auth('accounting.manage')
+  @AuditAction('petty_cash.updated', 'PettyCashEntry')
+  @Patch('petty-cash/:id')
+  @UsePipes(new ZodValidationPipe(pettyCashSchema))
+  async updatePettyCash(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: PettyCashDto,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.updatePettyCash(branchId, id, body);
+  }
+
+  @Auth('accounting.manage')
+  @AuditAction('petty_cash.deleted', 'PettyCashEntry')
+  @Delete('petty-cash/:id')
+  async deletePettyCash(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.deletePettyCash(branchId, id);
+  }
+
+  @Auth('accounting.manage')
   @Get('tally')
   async tally(
     @CurrentUser() u: SessionUser,
@@ -182,11 +285,11 @@ export class AccountingController {
     @Query('openingFloat') openingFloat?: string,
   ) {
     await this.access(u, branchId);
-    return this.accounting.closingPreview(
-      branchId,
-      date,
-      Number(openingFloat ?? 0) || 0,
-    );
+    const float =
+      openingFloat === undefined || openingFloat === ''
+        ? undefined
+        : Number(openingFloat);
+    return this.accounting.closingPreview(branchId, date, float);
   }
 
   @Auth('accounting.manage')
@@ -213,6 +316,32 @@ export class AccountingController {
   }
 
   @Auth('accounting.manage')
+  @AuditAction('cash.reopened', 'CashClosing')
+  @Post('closing/:id/reopen')
+  async reopenClosing(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.reopenDay(branchId, id);
+  }
+
+  @Auth('accounting.manage')
+  @AuditAction('cash.adjusted', 'CashClosing')
+  @Patch('closing/:id')
+  @UsePipes(new ZodValidationPipe(cashClosingAdjustSchema))
+  async adjustClosing(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: CashClosingAdjustDto,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.adjustClosing(branchId, id, body);
+  }
+
+  @Auth('accounting.manage')
   @Get('profit-loss')
   async pnl(
     @CurrentUser() u: SessionUser,
@@ -222,6 +351,36 @@ export class AccountingController {
   ) {
     await this.access(u, branchId);
     return this.accounting.profitAndLoss(branchId, from, to);
+  }
+
+  @Auth('accounting.manage')
+  @Get('profit-loss/export')
+  async pnlExport(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Res() res: Response,
+  ) {
+    await this.access(u, branchId);
+    const pnl = await this.accounting.profitAndLoss(branchId, from, to);
+    const csv = this.accounting.profitAndLossCsv(pnl);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="profit-loss-${from}-${to}.csv"`,
+    );
+    res.send(csv);
+  }
+
+  @Auth('accounting.manage')
+  @Get('profit-loss/consolidated')
+  consolidatedPnl(
+    @CurrentUser() u: SessionUser,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    return this.accounting.consolidatedProfitAndLoss(u.restaurantId, from, to);
   }
 
   @Auth('accounting.manage')
@@ -237,6 +396,26 @@ export class AccountingController {
   }
 
   @Auth('accounting.manage')
+  @Get('gst/export')
+  async gstExport(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Res() res: Response,
+  ) {
+    await this.access(u, branchId);
+    const gst = await this.accounting.gstReport(branchId, from, to);
+    const csv = this.accounting.gstCsv(gst);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="gst-${from}-${to}.csv"`,
+    );
+    res.send(csv);
+  }
+
+  @Auth('accounting.manage')
   @Get('gst/billing')
   async gstBilling(
     @CurrentUser() u: SessionUser,
@@ -249,6 +428,25 @@ export class AccountingController {
   }
 
   @Auth('accounting.manage')
+  @Get('gst/gstr1')
+  async gstr1(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Res() res: Response,
+  ) {
+    await this.access(u, branchId);
+    const body = await this.accounting.gstr1Export(branchId, from, to);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="gstr1-${from}-${to}.json"`,
+    );
+    res.send(JSON.stringify(body, null, 2));
+  }
+
+  @Auth('accounting.manage')
   @Get('branches')
   branches(
     @CurrentUser() u: SessionUser,
@@ -256,6 +454,53 @@ export class AccountingController {
     @Query('to') to: string,
   ) {
     return this.accounting.branchOverview(u.restaurantId, from, to);
+  }
+
+  @Auth('accounting.manage')
+  @Get('period-locks')
+  async periodLocks(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.listPeriodLocks(branchId);
+  }
+
+  @Auth('accounting.manage')
+  @AuditAction('period.locked', 'AccountingPeriodLock')
+  @Post('period-locks')
+  @UsePipes(new ZodValidationPipe(periodLockSchema))
+  async createPeriodLock(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Body() body: PeriodLockDto,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.createPeriodLock(branchId, u.id, body);
+  }
+
+  @Auth('accounting.manage')
+  @AuditAction('period.unlocked', 'AccountingPeriodLock')
+  @Delete('period-locks/:id')
+  async deletePeriodLock(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.deletePeriodLock(branchId, id);
+  }
+
+  @Auth('accounting.manage')
+  @Get('till-history')
+  async tillHistory(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    await this.access(u, branchId);
+    return this.accounting.listTillHistory(branchId, from, to);
   }
 
   @Auth('accounting.manage')
@@ -314,6 +559,40 @@ export class AccountingController {
   }
 
   @Auth('accounting.manage')
+  @Post('accounts/seed-defaults')
+  async seedAccounts(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+  ) {
+    await this.access(u, branchId);
+    return this.journal.ensureDefaultCoa(branchId);
+  }
+
+  @Auth('accounting.manage')
+  @Patch('accounts/:id')
+  @UsePipes(new ZodValidationPipe(ledgerAccountUpdateSchema))
+  async updateAccount(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: LedgerAccountUpdateDto,
+  ) {
+    await this.access(u, branchId);
+    return this.journal.updateAccount(branchId, id, body);
+  }
+
+  @Auth('accounting.manage')
+  @Delete('accounts/:id')
+  async deleteAccount(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access(u, branchId);
+    return this.journal.deleteAccount(branchId, id);
+  }
+
+  @Auth('accounting.manage')
   @Get('account-maps')
   async accountMaps(
     @CurrentUser() u: SessionUser,
@@ -368,7 +647,25 @@ export class AccountingController {
     @Body() body: JournalVoucherDto,
   ) {
     await this.access(u, branchId);
+    await this.accounting.assertUnlocked(branchId, body.postedOn);
     return this.journal.postJournal(branchId, u.id, body);
+  }
+
+  @Auth('accounting.manage')
+  @AuditAction('journal.reversed', 'JournalVoucher')
+  @Post('journals/:id/reverse')
+  async reverseJournal(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access(u, branchId);
+    // Reversals post with today's date — block when today is locked.
+    await this.accounting.assertUnlocked(
+      branchId,
+      new Date().toISOString().slice(0, 10),
+    );
+    return this.journal.reverseJournal(branchId, u.id, id);
   }
 
   @Auth('accounting.manage')

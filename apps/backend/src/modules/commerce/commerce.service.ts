@@ -4,10 +4,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { openSecret, sealSecret } from '../../auth/totp';
 import { PrismaService } from '../../prisma/prisma.service';
-import { OrdersService } from '../orders/orders.service';
+import type { OrdersService } from '../orders/orders.service';
 import { DeliveryService } from '../delivery/delivery.service';
 import {
   isPaidStatus,
@@ -25,9 +26,18 @@ export class CommerceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    private readonly orders: OrdersService,
+    private readonly moduleRef: ModuleRef,
     private readonly delivery: DeliveryService,
   ) {}
+
+  /** Lazy: avoids a circular import with OrdersService ↔ CatalogOrder ↔ Commerce. */
+  private orders() {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { OrdersService } = require('../orders/orders.service') as {
+      OrdersService: new (...args: never[]) => OrdersService;
+    };
+    return this.moduleRef.get(OrdersService, { strict: false });
+  }
 
   listGateways(restaurantId: string) {
     return this.prisma.paymentGateway.findMany({
@@ -87,9 +97,24 @@ export class CommerceService {
     const name = this.oneOf(provider, GATEWAY_PROVIDERS, 'Gateway');
     const gateway = await this.requireGateway(restaurantId, name);
     const order = await this.openOrder(branchId, orderId);
-    const intent = await this.prisma.paymentIntent.create({
-      data: { branchId, orderId: order.id, provider: name, amount, status: 'PENDING' },
+    const existing = await this.prisma.paymentIntent.findFirst({
+      where: { orderId: order.id, status: 'PENDING', provider: name },
+      orderBy: { createdAt: 'desc' },
     });
+    if (existing?.checkoutUrl && Number(existing.amount) === amount) {
+      return existing;
+    }
+    const intent =
+      existing ??
+      (await this.prisma.paymentIntent.create({
+        data: { branchId, orderId: order.id, provider: name, amount, status: 'PENDING' },
+      }));
+    if (existing && Number(existing.amount) !== amount) {
+      await this.prisma.paymentIntent.update({
+        where: { id: existing.id },
+        data: { amount },
+      });
+    }
     const remote = await this.postJson(gateway.baseUrl!, gateway.secret, gateway.keyId, {
       amount,
       currency: 'INR',
@@ -102,11 +127,33 @@ export class CommerceService {
     const updated = await this.prisma.paymentIntent.update({
       where: { id: intent.id },
       data: {
+        amount,
         gatewayRef: parsed.refs[0] ?? intent.id,
         checkoutUrl: parsed.url,
       },
     });
     return updated;
+  }
+
+  async paymentStatusForOrder(branchId: string, orderId: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, branchId },
+      select: { id: true, status: true, orderNumber: true, totalAmount: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    const intent = await this.prisma.paymentIntent.findFirst({
+      where: { orderId: order.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    return {
+      orderNumber: order.orderNumber,
+      status: order.status,
+      paid: order.status === 'PAID',
+      due: Number(order.totalAmount),
+      intentId: intent?.id ?? null,
+      intentStatus: intent?.status ?? null,
+      checkoutUrl: intent?.checkoutUrl ?? null,
+    };
   }
 
   async handleGatewayWebhook(
@@ -145,7 +192,7 @@ export class CommerceService {
       });
       return { ok: true, paid: false };
     }
-    await this.orders.checkout(intent.branchId, intent.orderId, intent.order.createdById, {
+    await this.orders().checkout(intent.branchId, intent.orderId, intent.order.createdById, {
       payments: [
         {
           method: name === 'STRIPE' ? 'CARD' : 'UPI',
@@ -205,7 +252,7 @@ export class CommerceService {
       return { ok: true, paid: false };
     }
     const reference = parsed.utr ?? intent.gatewayRef ?? intent.id;
-    await this.orders.checkout(intent.branchId, intent.orderId, intent.order.createdById, {
+    await this.orders().checkout(intent.branchId, intent.orderId, intent.order.createdById, {
       payments: [{ method: 'CARD', amount: Number(intent.amount), reference }],
       allowPartial: false,
       requestId: `edc${intent.id}`.slice(0, 64),
@@ -268,6 +315,13 @@ export class CommerceService {
       return this.prisma.edcTerminal.update({ where: { id: existing.id }, data });
     }
     return this.prisma.edcTerminal.create({ data: { branchId, ...data } });
+  }
+
+  async deleteTerminal(branchId: string, id: string) {
+    const existing = await this.prisma.edcTerminal.findFirst({ where: { id, branchId } });
+    if (!existing) throw new NotFoundException('Terminal not found');
+    await this.prisma.edcTerminal.delete({ where: { id } });
+    return { ok: true };
   }
 
   async pushToTerminal(branchId: string, terminalId: string, orderId: string, amount: number) {
@@ -348,6 +402,16 @@ export class CommerceService {
     return this.listHouse(branchId);
   }
 
+  async deleteHouse(branchId: string, id: string) {
+    const existing = await this.prisma.houseAccount.findFirst({ where: { id, branchId } });
+    if (!existing) throw new NotFoundException('House account not found');
+    if (Number(existing.balance) !== 0) {
+      throw new BadRequestException('Clear the balance before deleting this house account');
+    }
+    await this.prisma.houseAccount.delete({ where: { id } });
+    return { ok: true };
+  }
+
   async postHouse(
     branchId: string,
     userId: string,
@@ -362,7 +426,7 @@ export class CommerceService {
       throw new BadRequestException('This would exceed the house credit limit');
     }
     if (dto.kind === 'CHARGE' && dto.orderId) {
-      await this.orders.checkout(branchId, dto.orderId, userId, {
+      await this.orders().checkout(branchId, dto.orderId, userId, {
         payments: [{ method: 'STORE_CREDIT', amount: Math.abs(dto.amount), reference: account.name }],
         allowPartial: true,
         requestId: `ha${account.id}${dto.orderId ?? 'ledger'}`.slice(0, 64),
@@ -520,7 +584,9 @@ export class CommerceService {
   }
 
   private async openOrder(branchId: string, orderId: string) {
-    const order = await this.prisma.order.findFirst({ where: { id: orderId, branchId, status: 'OPEN' } });
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, branchId, status: { in: ['OPEN', 'BILLED'] } },
+    });
     if (!order) throw new BadRequestException('Order is not open');
     return order;
   }

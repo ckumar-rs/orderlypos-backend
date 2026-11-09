@@ -34,6 +34,7 @@ export const PERMISSIONS = [
   { key: "attendance.manage", label: "Manage Staff Attendance", category: "Staff" },
   { key: "delivery.manage", label: "Manage Deliveries", category: "Delivery" },
   { key: "staff.manage", label: "Manage Staff Schedules, Leave & Payroll", category: "Staff" },
+  { key: "expense.create", label: "Create Expenses", category: "Accounting" },
   { key: "accounting.manage", label: "Manage Accounting", category: "Accounting" },
   { key: "marketing.manage", label: "Manage Coupons, Promotions & Campaigns", category: "Marketing" },
   { key: "operations.manage", label: "Manage Equipment & Documents", category: "Operations" },
@@ -47,6 +48,7 @@ export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
 export const PERMISSION_IMPLIES: Partial<Record<PermissionKey, PermissionKey[]>> = {
   "menu.manage": ["menu.view"],
   "tables.manage": ["tables.view"],
+  "accounting.manage": ["expense.create"],
 };
 
 /** True when `held` satisfies `required`, directly or through PERMISSION_IMPLIES. */
@@ -95,6 +97,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<StaffRole, PermissionKey[]> = {
   CASHIER: [
     "orders.create", "orders.edit", "orders.accept", "bills.print", "discounts.apply",
     "sales.view", "customers.manage", "dashboard.sales.view",
+    "expense.create",
     "menu.view", "tables.view",
   ],
   // Waiters read the menu and floor plan and run orders; they cannot edit

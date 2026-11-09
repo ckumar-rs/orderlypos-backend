@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UsePipes,
@@ -12,6 +13,7 @@ import { ApiTags } from '@nestjs/swagger';
 import {
   createWaitlistEntrySchema,
   seatWaitlistEntrySchema,
+  updateWaitlistEntrySchema,
   type SessionUser,
 } from '@nodedr-restaurant/types';
 import { Auth } from '../../common/decorators/auth.decorator';
@@ -50,6 +52,7 @@ export class WaitlistController {
     return this.waitlistService.create(branchId, body as never);
   }
 
+  /** Specific path before :id */
   @Auth('reservations.manage')
   @Post(':id/seat')
   @UsePipes(new ZodValidationPipe(seatWaitlistEntrySchema))
@@ -62,6 +65,19 @@ export class WaitlistController {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     const { tableId } = body as { tableId?: string };
     return this.waitlistService.seat(branchId, id, tableId);
+  }
+
+  @Auth('reservations.manage')
+  @Patch(':id')
+  @UsePipes(new ZodValidationPipe(updateWaitlistEntrySchema))
+  async update(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.waitlistService.update(branchId, id, body as never);
   }
 
   @Auth('reservations.manage')

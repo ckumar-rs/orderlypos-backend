@@ -275,6 +275,34 @@ export class WebhooksService {
     return e;
   }
 
+  async update(
+    restaurantId: string,
+    id: string,
+    dto: { url?: string; events?: string[]; description?: string | null },
+  ) {
+    await this.get(restaurantId, id);
+    const events =
+      dto.events !== undefined ? this.validateEvents(dto.events) : undefined;
+    if (dto.url !== undefined) await this.assertUrl(dto.url);
+    return this.prisma.webhookEndpoint.update({
+      where: { id },
+      data: {
+        ...(dto.url !== undefined ? { url: dto.url } : {}),
+        ...(events !== undefined ? { events } : {}),
+        ...(dto.description !== undefined
+          ? { description: dto.description }
+          : {}),
+      },
+      select: {
+        id: true,
+        url: true,
+        events: true,
+        description: true,
+        isActive: true,
+      },
+    });
+  }
+
   async setActive(restaurantId: string, id: string, isActive: boolean) {
     await this.get(restaurantId, id);
     await this.prisma.webhookEndpoint.update({

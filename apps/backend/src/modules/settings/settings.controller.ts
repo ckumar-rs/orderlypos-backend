@@ -99,4 +99,27 @@ export class SettingsController {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     return this.settingsService.setKioskToken(branchId, user.id, action);
   }
+
+  @Auth('settings.manage')
+  @Post('pickup/:action')
+  async setPickup(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('action') action: string,
+  ) {
+    if (action !== 'enable' && action !== 'rotate' && action !== 'disable') {
+      throw new BadRequestException('Unknown pickup board action');
+    }
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.settingsService.setPickupDisplayToken(branchId, user.id, action);
+  }
+
+  @Auth('settings.manage')
+  @Post('email/test')
+  async testEmail(
+    @CurrentUser() user: SessionUser,
+    @Body() body: { to?: string },
+  ) {
+    return this.settingsService.sendTestEmail(user.restaurantId, user.id, body?.to);
+  }
 }

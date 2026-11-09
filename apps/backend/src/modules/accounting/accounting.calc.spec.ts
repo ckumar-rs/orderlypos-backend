@@ -32,4 +32,18 @@ describe('accounting maths', () => {
   it('computes expected cash', () => {
     expect(expectedCash(1000, 5200, 200, 800)).toBe(5200);
   });
+
+  it('backs tax for exclusive prices as add-on', () => {
+    const r = gstSummary(
+      [
+        { lineTotal: 100, taxRatePercent: 5, factor: 1 },
+        { lineTotal: 100, taxRatePercent: 18, factor: 1 },
+      ],
+      'EXCLUSIVE',
+    );
+    expect(r.rows).toEqual([
+      { ratePercent: 5, taxableValue: 100, tax: 5, total: 105 },
+      { ratePercent: 18, taxableValue: 100, tax: 18, total: 118 },
+    ]);
+  });
 });

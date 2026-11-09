@@ -16,6 +16,30 @@ export const customerSchema = z.object({
 });
 export type CustomerDto = z.infer<typeof customerSchema>;
 
+export const customerNoteSchema = z.object({
+  body: z.string().trim().min(1).max(2000),
+});
+export type CustomerNoteDto = z.infer<typeof customerNoteSchema>;
+
+export const customerFollowUpSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  body: z.string().trim().max(2000).optional().nullable(),
+  dueAt: z.coerce.date().optional().nullable(),
+});
+export type CustomerFollowUpDto = z.infer<typeof customerFollowUpSchema>;
+
+export const customerImportSchema = z.object({
+  csv: z.string().min(8).max(2_000_000),
+});
+export type CustomerImportDto = z.infer<typeof customerImportSchema>;
+
+/** Staff till: phone → find or create a guest on this branch only. */
+export const customerFindOrCreateSchema = z.object({
+  phone: z.string().trim().min(8).max(20),
+  name: z.string().trim().min(1).max(80).optional(),
+});
+export type CustomerFindOrCreateDto = z.infer<typeof customerFindOrCreateSchema>;
+
 export const membershipTierSchema = z.object({
   name: z.string().trim().min(1).max(40),
   minPoints: z.coerce.number().int().nonnegative(),
@@ -80,6 +104,13 @@ export const rewardSchema = z
   });
 export type RewardDto = z.infer<typeof rewardSchema>;
 
+export const rewardUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  pointsCost: z.coerce.number().int().min(0).max(1_000_000).optional(),
+  cashbackCost: z.coerce.number().min(0).max(100_000).optional(),
+});
+export type RewardUpdateDto = z.infer<typeof rewardUpdateSchema>;
+
 export const employeeDiscountPolicySchema = z
   .object({
     userId: z.string().min(1).optional(),
@@ -91,3 +122,12 @@ export const employeeDiscountPolicySchema = z
     message: "Choose one staff member or one role",
   });
 export type EmployeeDiscountPolicyDto = z.infer<typeof employeeDiscountPolicySchema>;
+
+export const employeeDiscountPolicyUpdateSchema = z.object({
+  percent: z.coerce.number().min(0).max(100).optional(),
+  maxAmount: blankOrNull.pipe(z.number().min(0).max(100_000).nullable()).optional(),
+  isActive: z.boolean().optional(),
+});
+export type EmployeeDiscountPolicyUpdateDto = z.infer<
+  typeof employeeDiscountPolicyUpdateSchema
+>;

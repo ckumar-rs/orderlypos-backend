@@ -40,6 +40,11 @@ export const createStaffApiKeySchema = z.object({
 });
 export type CreateStaffApiKeyDto = z.infer<typeof createStaffApiKeySchema>;
 
+export const renameApiKeySchema = z.object({
+  name: z.string().trim().min(1).max(80),
+});
+export type RenameApiKeyDto = z.infer<typeof renameApiKeySchema>;
+
 // Public REST API request/response shapes (docs/integrations-api.md is the
 // human-readable version of these).
 

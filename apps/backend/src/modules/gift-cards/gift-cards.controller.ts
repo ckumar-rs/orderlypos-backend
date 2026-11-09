@@ -58,4 +58,15 @@ export class GiftCardsController {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     return this.giftCardsService.issue(branchId, body as never);
   }
+
+  @Auth('customers.manage')
+  @Post(':id/void')
+  async voidGiftCard(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.giftCardsService.voidGiftCard(branchId, id);
+  }
 }

@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UploadedFile,
   UseInterceptors,
@@ -17,15 +18,20 @@ import { ApiTags } from '@nestjs/swagger';
 import {
   menuCategorySchema,
   menuItemSchema,
+  menuItemsReorderSchema,
   menuPriceRuleSchema,
+  menuPriceRuleUpdateSchema,
+  menuReorderSchema,
   menuSetSchema,
   modifierGroupSchema,
-  modifierImageSchema,
+  updateModifierSchema,
   kitchenCourseSchema,
   kitchenStationSchema,
   menuItemChannelPricesSchema,
   salesChannelSchema,
   setComboComponentsSchema,
+  type MenuItemsReorderDto,
+  type MenuReorderDto,
   type SessionUser,
 } from '@nodedr-restaurant/types';
 import { Auth } from '../../common/decorators/auth.decorator';
@@ -93,6 +99,18 @@ export class MenuController {
     return this.menuService.deleteCategory(branchId, id);
   }
 
+  @Auth('menu.manage')
+  @Put('categories/reorder')
+  @UsePipes(new ZodValidationPipe(menuReorderSchema))
+  async reorderCategories(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Body() body: MenuReorderDto,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.menuService.reorderCategories(branchId, body.ids);
+  }
+
   // --- Kitchen stations -----------------------------------------------------
 
   @Auth('menu.manage')
@@ -123,6 +141,30 @@ export class MenuController {
   }
 
   @Auth('menu.manage')
+  @Patch('stations/:id')
+  @UsePipes(new ZodValidationPipe(kitchenStationSchema.partial()))
+  async updateStation(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.menuService.updateStation(branchId, id, body as never);
+  }
+
+  @Auth('menu.manage')
+  @Delete('stations/:id')
+  async deleteStation(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.menuService.deleteStation(branchId, id);
+  }
+
+  @Auth('menu.manage')
   @Get('courses')
   async listCourses(
     @CurrentUser() user: SessionUser,
@@ -142,6 +184,19 @@ export class MenuController {
   ) {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     return this.menuService.createCourse(branchId, body as never);
+  }
+
+  @Auth('menu.manage')
+  @Patch('courses/:id')
+  @UsePipes(new ZodValidationPipe(kitchenCourseSchema.partial()))
+  async updateCourse(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.menuService.updateCourse(branchId, id, body as never);
   }
 
   @Auth('menu.manage')
@@ -192,6 +247,16 @@ export class MenuController {
   }
 
   @Auth('menu.manage')
+  @Post('items/ensure-skus')
+  async ensureSkus(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.menuService.ensureSkus(branchId, user.id);
+  }
+
+  @Auth('menu.manage')
   @Post('items/upload-image')
   @UseInterceptors(FileInterceptor('file', imageUploadOptions))
   uploadItemImage(@UploadedFile() file?: Express.Multer.File) {
@@ -216,6 +281,29 @@ export class MenuController {
   ) {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     return this.menuService.updateItem(branchId, id, user.id, body as never);
+  }
+
+  @Auth('menu.manage')
+  @Post('items/:id/duplicate')
+  async duplicateItem(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.menuService.duplicateItem(branchId, id, user.id);
+  }
+
+  @Auth('menu.manage')
+  @Put('items/reorder')
+  @UsePipes(new ZodValidationPipe(menuItemsReorderSchema))
+  async reorderItems(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Body() body: MenuItemsReorderDto,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.menuService.reorderItems(branchId, body.ids, body.categoryId);
   }
 
   @Auth('menu.manage')
@@ -267,19 +355,15 @@ export class MenuController {
 
   @Auth('menu.manage')
   @Patch('modifiers/:id')
-  @UsePipes(new ZodValidationPipe(modifierImageSchema))
-  async updateModifierImage(
+  @UsePipes(new ZodValidationPipe(updateModifierSchema))
+  async updateModifier(
     @CurrentUser() user: SessionUser,
     @Query('branchId') branchId: string,
     @Param('id') id: string,
     @Body() body: unknown,
   ) {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
-    return this.menuService.updateModifierImage(
-      branchId,
-      id,
-      (body as { imageUrl: string | null }).imageUrl,
-    );
+    return this.menuService.updateModifier(branchId, id, body as never);
   }
 
   @Auth('menu.manage')
@@ -417,6 +501,19 @@ export class MenuController {
   ) {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     return this.menuService.createPriceRule(branchId, body as never, user.id);
+  }
+
+  @Auth('menu.manage')
+  @Put('price-rules/:id')
+  @UsePipes(new ZodValidationPipe(menuPriceRuleUpdateSchema))
+  async updatePriceRule(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.menuService.updatePriceRule(branchId, id, body as never, user.id);
   }
 
   @Auth('menu.manage')

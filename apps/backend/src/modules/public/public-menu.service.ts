@@ -10,6 +10,14 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { MenuService } from '../menu/menu.service';
 import { OrdersService } from '../orders/orders.service';
+import {
+  branchOrderingFlags,
+  readBranchSettingsMap,
+  readRestaurantSettingsMap,
+  restaurantPaymentPrefs,
+  seedBranchSettings,
+  seedRestaurantSettings,
+} from '../settings/settings-kv';
 import { recommendDishes } from '../customers/recommend';
 
 @Injectable()
@@ -170,9 +178,39 @@ export class PublicMenuService {
         card: restaurant.payCard,
         upi: restaurant.payUpi,
         other: restaurant.payOther,
+        ...(await this.paymentPrefsForRestaurant(restaurant.id)),
       },
+      guestSignals: await this.guestSignalsForBranch(branch.id),
       categories,
     };
+  }
+
+  private async paymentPrefsForRestaurant(restaurantId: string) {
+    await seedRestaurantSettings(this.prisma, restaurantId);
+    const prefs = restaurantPaymentPrefs(
+      await readRestaurantSettingsMap(this.prisma, restaurantId),
+    );
+    return {
+      preferred: prefs.preferred || null,
+      order: prefs.order,
+      cashLabel: prefs.cashLabel,
+    };
+  }
+
+  private async guestSignalsForBranch(branchId: string) {
+    await seedBranchSettings(this.prisma, branchId);
+    const flags = branchOrderingFlags(await readBranchSettingsMap(this.prisma, branchId));
+    return {
+      paidClaim: flags.guestPaidClaimEnabled,
+      cod: flags.guestCodRequestEnabled,
+      waiter: flags.guestWaiterEnabled,
+      bill: flags.guestBillEnabled,
+    };
+  }
+
+  private async cashLabelForRestaurant(restaurantId: string) {
+    const prefs = await this.paymentPrefsForRestaurant(restaurantId);
+    return prefs.cashLabel;
   }
 
   async guestCategories(
@@ -387,10 +425,35 @@ export class PublicMenuService {
     return { order, openRequests: requests.map((r) => r.type) };
   }
 
-  /** "Call waiter" / "Bring the bill". One open request per type per table. */
-  async createRequest(qrToken: string, type: 'WAITER' | 'BILL') {
+  /** Guest signals from the table QR. One open request per type per table. */
+  async createRequest(
+    qrToken: string,
+    type: 'WAITER' | 'BILL' | 'PAID_CLAIM' | 'COD',
+  ) {
     const table = await this.resolveTable(qrToken);
     const branchId = table.floor.branchId;
+    const signals = await this.guestSignalsForBranch(branchId);
+    const cashLabel = await this.cashLabelForRestaurant(table.floor.branch.restaurantId);
+    if (type === 'PAID_CLAIM' && !signals.paidClaim) {
+      throw new BadRequestException(
+        'This restaurant has not turned on “I paid” for table QR',
+      );
+    }
+    if (type === 'COD' && !signals.cod) {
+      throw new BadRequestException(
+        `This restaurant has not turned on ${cashLabel} requests for table QR`,
+      );
+    }
+    if (type === 'WAITER' && !signals.waiter) {
+      throw new BadRequestException(
+        'This restaurant has not turned on call-waiter for table QR',
+      );
+    }
+    if (type === 'BILL' && !signals.bill) {
+      throw new BadRequestException(
+        'This restaurant has not turned on request-bill for table QR',
+      );
+    }
     const existing = await this.prisma.tableRequest.findFirst({
       where: { tableId: table.id, type, resolvedAt: null },
     });
@@ -401,17 +464,51 @@ export class PublicMenuService {
     });
     this.realtime.emitToBranch(branchId, 'table.request', { id: request.id });
     const tableName = table.name ?? `Table ${table.number}`;
+    const copy =
+      type === 'BILL'
+        ? {
+            notif: 'table.bill' as const,
+            title: `${tableName} wants the bill`,
+            body: 'Requested from the table QR code',
+            permission: 'tables.manage' as const,
+          }
+        : type === 'WAITER'
+          ? {
+              notif: 'table.waiter' as const,
+              title: `${tableName} needs a waiter`,
+              body: 'Requested from the table QR code',
+              permission: 'tables.manage' as const,
+            }
+          : type === 'PAID_CLAIM'
+            ? {
+                notif: 'table.paid_claim' as const,
+                title: `${tableName} says they paid`,
+                body: 'Confirm UPI on the till — the guest did not settle the bank',
+                permission: 'bills.print' as const,
+              }
+            : {
+                notif: 'table.cod' as const,
+                title: `${tableName} wants ${cashLabel}`,
+                body: `Collect ${cashLabel} at the table or counter`,
+                permission: 'bills.print' as const,
+              };
     try {
-      await this.notifications.notifyByPermission(branchId, 'tables.manage', {
-        type: type === 'BILL' ? 'table.bill' : 'table.waiter',
-        title:
-          type === 'BILL'
-            ? `${tableName} wants the bill`
-            : `${tableName} needs a waiter`,
-        body: 'Requested from the table QR code',
+      await this.notifications.notifyByPermission(branchId, copy.permission, {
+        type: copy.notif,
+        title: copy.title,
+        body: copy.body,
         entity: 'Table',
         entityId: table.id,
       });
+      if (type === 'PAID_CLAIM' || type === 'COD') {
+        await this.notifications.notifyByPermission(branchId, 'tables.manage', {
+          type: copy.notif,
+          title: copy.title,
+          body: copy.body,
+          entity: 'Table',
+          entityId: table.id,
+        });
+      }
     } catch {
       // Best-effort: the request row and live event already exist.
     }

@@ -1,5 +1,5 @@
 import { gstSummary, round2 } from './accounting.calc';
-import { branchGstState, inclusiveGstLine, indiaPlaceOfSupply, splitIndiaGst } from '../../common/india-gst';
+import { branchGstState, gstLine, indiaPlaceOfSupply, splitIndiaGst } from '../../common/india-gst';
 
 export type GstSupply = 'INTRA' | 'INTER';
 export type GstDocumentKind = 'TAX_INVOICE' | 'BILL_OF_SUPPLY';
@@ -47,13 +47,17 @@ function chargedShare(bill: GstBillInput): number {
   return Math.max(0, charged) / bill.subtotal;
 }
 
-export function planGstBilling(branchState: string | null, bills: GstBillInput[]) {
+export function planGstBilling(
+  branchState: string | null,
+  bills: GstBillInput[],
+  taxMode: 'INCLUSIVE' | 'EXCLUSIVE' = 'INCLUSIVE',
+) {
   const documents = bills.map((bill) => {
     const factor = chargedShare(bill);
     let taxable = 0;
     let tax = 0;
     for (const line of bill.lines) {
-      const part = inclusiveGstLine(line.lineTotal * factor, line.taxRatePercent);
+      const part = gstLine(line.lineTotal * factor, line.taxRatePercent, taxMode);
       taxable += part.taxable;
       tax += part.tax;
     }
@@ -82,7 +86,7 @@ export function planGstBilling(branchState: string | null, bills: GstBillInput[]
       lineCount += 1;
       const key = line.hsnCode?.trim() || 'Missing';
       if (key === 'Missing') missingHsn += 1;
-      const part = inclusiveGstLine(line.lineTotal * factor, line.taxRatePercent);
+      const part = gstLine(line.lineTotal * factor, line.taxRatePercent, taxMode);
       const row = hsn.get(key) ?? { taxable: 0, tax: 0 };
       row.taxable += part.taxable;
       row.tax += part.tax;
@@ -122,11 +126,12 @@ export function planGstBilling(branchState: string | null, bills: GstBillInput[]
         total: round2(row.taxable + row.tax),
       }))
       .sort((left, right) => left.code.localeCompare(right.code)),
-    rates: gstSummary(summaryLines),
+    rates: gstSummary(summaryLines, taxMode),
     cgst: round2(documents.reduce((sum, doc) => sum + doc.cgst, 0)),
     sgst: round2(documents.reduce((sum, doc) => sum + doc.sgst, 0)),
     utgst: round2(documents.reduce((sum, doc) => sum + doc.utgst, 0)),
     igst: round2(documents.reduce((sum, doc) => sum + doc.igst, 0)),
+    taxMode,
   };
 }
 
@@ -162,7 +167,7 @@ export function gstRequirements(input: {
       id: 'b2b',
       done: false,
       label: 'Guest GSTIN for B2B',
-      detail: 'A customer record has a state code and no GSTIN, so these bills stay B2C. This page does not build a GSTR-1 file for the GST portal.',
+      detail: 'A customer record has a state code and no GSTIN, so these bills stay B2C. Use GSTR-1 JSON for B2C/HSN portal handoff.',
     },
   ];
 }

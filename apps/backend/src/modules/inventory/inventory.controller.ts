@@ -223,6 +223,19 @@ export class InventoryController {
   }
 
   @Auth('inventory.manage')
+  @Patch('units/:id')
+  @UsePipes(new ZodValidationPipe(unitConversionSchema))
+  async updateUnit(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: UnitConversionDto,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.insight.updateUnit(branchId, id, body.fromUnit, body.toUnit, body.factor);
+  }
+
+  @Auth('inventory.manage')
   @Delete('units/:id')
   async deleteUnit(
     @CurrentUser() user: SessionUser,
@@ -410,6 +423,19 @@ export class InventoryController {
       user.id,
       body as never,
     );
+  }
+
+  @Auth('inventory.manage')
+  @Patch('purchase-orders/:id')
+  @UsePipes(new ZodValidationPipe(purchaseOrderSchema))
+  async updatePurchaseOrder(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.purchaseOrdersService.updateDraft(branchId, id, body as never);
   }
 
   @Auth('inventory.manage')
@@ -608,6 +634,17 @@ export class InventoryController {
   }
 
   @Auth('inventory.manage')
+  @Delete('stock-counts/:id')
+  async deleteStockCount(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.stockCountsService.deleteDraft(branchId, id);
+  }
+
+  @Auth('inventory.manage')
   @Get('prep-recipes')
   async listPrepRecipes(
     @CurrentUser() user: SessionUser,
@@ -738,6 +775,30 @@ export class InventoryController {
   }
 
   @Auth('inventory.manage')
+  @Patch('purchase-requests/:id')
+  @UsePipes(new ZodValidationPipe(purchaseRequestSchema))
+  async updatePurchaseRequest(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.purchaseRequestsService.updateDraft(branchId, id, body as never);
+  }
+
+  @Auth('inventory.manage')
+  @Delete('purchase-requests/:id')
+  async deletePurchaseRequest(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.purchaseRequestsService.deleteDraft(branchId, id);
+  }
+
+  @Auth('inventory.manage')
   @Patch('purchase-requests/:id/status')
   async updatePurchaseRequestStatus(
     @CurrentUser() user: SessionUser,
@@ -809,6 +870,30 @@ export class InventoryController {
       user.id,
       body as never,
     );
+  }
+
+  @Auth('inventory.manage')
+  @Patch('quotations/:id')
+  @UsePipes(new ZodValidationPipe(supplierQuotationSchema))
+  async updateQuotation(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.supplierQuotationsService.updateDraft(branchId, id, body as never);
+  }
+
+  @Auth('inventory.manage')
+  @Delete('quotations/:id')
+  async deleteQuotation(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.supplierQuotationsService.deleteDraft(branchId, id);
   }
 
   @Auth('inventory.manage')

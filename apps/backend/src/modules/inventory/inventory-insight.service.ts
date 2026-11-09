@@ -52,6 +52,32 @@ export class InventoryInsightService {
     });
   }
 
+  async updateUnit(branchId: string, id: string, fromUnit: string, toUnit: string, factor: number) {
+    const row = await this.prisma.unitConversion.findFirst({ where: { id, branchId } });
+    if (!row) throw new NotFoundException('Conversion not found');
+    if (fromUnit === toUnit) throw new BadRequestException('Choose two different units');
+    if (!(factor > 0)) throw new BadRequestException('The factor must be greater than zero');
+    const builtin = BUILTIN_CONVERSIONS.some(
+      (item) =>
+        (item.fromUnit === fromUnit && item.toUnit === toUnit) ||
+        (item.fromUnit === toUnit && item.toUnit === fromUnit),
+    );
+    if (builtin) throw new BadRequestException('That conversion is already built in');
+    const clash = await this.prisma.unitConversion.findFirst({
+      where: {
+        branchId,
+        fromUnit: fromUnit as never,
+        toUnit: toUnit as never,
+        NOT: { id },
+      },
+    });
+    if (clash) throw new BadRequestException('That conversion already exists');
+    return this.prisma.unitConversion.update({
+      where: { id },
+      data: { fromUnit: fromUnit as never, toUnit: toUnit as never, factor },
+    });
+  }
+
   async deleteUnit(branchId: string, id: string) {
     const row = await this.prisma.unitConversion.findFirst({ where: { id, branchId } });
     if (!row) throw new NotFoundException('Conversion not found');

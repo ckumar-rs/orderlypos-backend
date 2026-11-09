@@ -1,8 +1,28 @@
-import { Body, Controller, ForbiddenException, Get, Headers, Param, Post, Put, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+  UsePipes,
+} from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import type { SessionUser } from '@nodedr-restaurant/types';
+import {
+  customFieldSchema,
+  customFieldUpdateSchema,
+  type CustomFieldDto,
+  type CustomFieldUpdateDto,
+  type SessionUser,
+} from '@nodedr-restaurant/types';
 import { Auth } from '../../common/decorators/auth.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { BranchAccessService } from '../../common/services/branch-access.service';
 import { PlatformGraphqlService } from './platform-graphql.service';
 import { canReadFields, canWriteFieldValue } from './field-entities';
@@ -47,18 +67,7 @@ export class PlatformController {
     return this.platform.registerDevice(branchId, body.name ?? 'Register');
   }
 
-  @Auth('settings.manage')
-  @Put('devices/:id')
-  async saveConfig(
-    @CurrentUser() user: SessionUser,
-    @Query('branchId') branchId: string,
-    @Param('id') id: string,
-    @Body() body: { config?: Record<string, unknown> },
-  ) {
-    await this.access.assertAccess(user.restaurantId, branchId);
-    return this.platform.saveDeviceConfig(branchId, id, body.config ?? {});
-  }
-
+  /** Specific paths before devices/:id */
   @Auth('orders.create')
   @Post('devices/heartbeat')
   heartbeat(
@@ -72,6 +81,29 @@ export class PlatformController {
   @Get('devices/me')
   me(@Headers('x-device-token') token: string | undefined) {
     return this.platform.deviceConfig(token);
+  }
+
+  @Auth('settings.manage')
+  @Put('devices/:id')
+  async saveConfig(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: { config?: Record<string, unknown> },
+  ) {
+    await this.access.assertAccess(user.restaurantId, branchId);
+    return this.platform.saveDeviceConfig(branchId, id, body.config ?? {});
+  }
+
+  @Auth('settings.manage')
+  @Delete('devices/:id')
+  async deleteDevice(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access.assertAccess(user.restaurantId, branchId);
+    return this.platform.deleteDevice(branchId, id);
   }
 
   @Auth('settings.manage')
@@ -112,10 +144,11 @@ export class PlatformController {
 
   @Auth('settings.manage')
   @Post('fields')
+  @UsePipes(new ZodValidationPipe(customFieldSchema))
   async addField(
     @CurrentUser() user: SessionUser,
     @Query('branchId') branchId: string,
-    @Body() body: { entity?: string; key?: string; label?: string },
+    @Body() body: CustomFieldDto,
   ) {
     await this.access.assertAccess(user.restaurantId, branchId);
     return this.platform.addField(branchId, {
@@ -123,6 +156,30 @@ export class PlatformController {
       key: body.key ?? '',
       label: body.label ?? '',
     });
+  }
+
+  @Auth('settings.manage')
+  @Patch('fields/:id')
+  @UsePipes(new ZodValidationPipe(customFieldUpdateSchema))
+  async updateField(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: CustomFieldUpdateDto,
+  ) {
+    await this.access.assertAccess(user.restaurantId, branchId);
+    return this.platform.updateField(branchId, id, body);
+  }
+
+  @Auth('settings.manage')
+  @Delete('fields/:id')
+  async deleteField(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access.assertAccess(user.restaurantId, branchId);
+    return this.platform.deleteField(branchId, id);
   }
 
   @Auth()
@@ -161,6 +218,33 @@ export class PlatformController {
       reportKey: body.reportKey ?? 'sales-daily',
       days: Number(body.days ?? 7),
     });
+  }
+
+  @Auth('reports.access')
+  @Put('saved-reports/:id')
+  async updateSavedReport(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: { name?: string; reportKey?: string; days?: number },
+  ) {
+    await this.access.assertAccess(user.restaurantId, branchId);
+    return this.platform.updateSavedReport(branchId, id, {
+      ...(body.name !== undefined ? { name: body.name } : {}),
+      ...(body.reportKey !== undefined ? { reportKey: body.reportKey } : {}),
+      ...(body.days !== undefined ? { days: Number(body.days) } : {}),
+    });
+  }
+
+  @Auth('reports.access')
+  @Delete('saved-reports/:id')
+  async deleteSavedReport(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access.assertAccess(user.restaurantId, branchId);
+    return this.platform.deleteSavedReport(branchId, id);
   }
 
   @Auth('reports.access')
@@ -234,10 +318,46 @@ export class PlatformController {
     @CurrentUser() user: SessionUser,
     @Query('branchId') branchId: string,
     @Param('id') id: string,
-    @Body() body: { active?: boolean },
+    @Body()
+    body: {
+      name?: string;
+      trigger?: string;
+      actions?: unknown;
+      emailTo?: string;
+      phoneTo?: string;
+      webhookUrl?: string;
+      taskTitle?: string;
+      nextRuleId?: string;
+      active?: boolean;
+    },
   ) {
     await this.access.assertAccess(user.restaurantId, branchId);
-    return this.platform.setRuleActive(branchId, id, Boolean(body.active));
+    const keys = Object.keys(body ?? {}).filter((k) => k !== 'active');
+    if (keys.length === 0 && body.active !== undefined) {
+      return this.platform.setRuleActive(branchId, id, Boolean(body.active));
+    }
+    return this.platform.updateRule(branchId, id, {
+      name: body.name,
+      trigger: body.trigger,
+      actions: body.actions,
+      emailTo: body.emailTo,
+      phoneTo: body.phoneTo,
+      webhookUrl: body.webhookUrl,
+      taskTitle: body.taskTitle,
+      nextRuleId: body.nextRuleId,
+      active: body.active,
+    });
+  }
+
+  @Auth('settings.manage')
+  @Delete('automation/:id')
+  async deleteRule(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access.assertAccess(user.restaurantId, branchId);
+    return this.platform.deleteRule(branchId, id);
   }
 
   @Auth('reports.access')

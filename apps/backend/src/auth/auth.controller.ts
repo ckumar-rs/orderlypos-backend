@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
+  Patch,
   Post,
   Req,
   Res,
@@ -11,11 +13,15 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import {
+  changePasswordSchema,
+  forgotPasswordSchema,
   loginSchema,
   pinLoginSchema,
   registerSchema,
+  resetPasswordSchema,
   twoFactorCodeSchema,
   twoFactorDisableSchema,
+  updateProfileSchema,
   type SessionUser,
 } from '@nodedr-restaurant/types';
 import { Throttle } from '@nestjs/throttler';
@@ -159,14 +165,54 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Get('me')
-  me(@CurrentUser() user: unknown) {
-    return { user };
+  async me(@CurrentUser() user: SessionUser) {
+    const profile = await this.authService.getProfile(user.id);
+    return { user: profile };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('me')
+  @UsePipes(new ZodValidationPipe(updateProfileSchema))
+  async updateMe(@CurrentUser() user: SessionUser, @Body() body: unknown) {
+    const profile = await this.authService.updateProfile(user.id, body as never);
+    return { user: profile };
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @UseGuards(JwtAuthGuard)
+  @Post('me/password')
+  @UsePipes(new ZodValidationPipe(changePasswordSchema))
+  changePassword(@CurrentUser() user: SessionUser, @Body() body: unknown) {
+    return this.authService.changePassword(user.id, body as never);
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('forgot-password')
+  @UsePipes(new ZodValidationPipe(forgotPasswordSchema))
+  forgotPassword(@Body() body: unknown) {
+    return this.authService.forgotPassword(body as never);
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('reset-password')
+  @UsePipes(new ZodValidationPipe(resetPasswordSchema))
+  resetPassword(@Body() body: unknown) {
+    return this.authService.resetPassword(body as never);
   }
 
   @UseGuards(JwtAuthGuard)
   @Get('webauthn')
   webauthnList(@CurrentUser() user: SessionUser) {
     return this.authService.webauthnCredentials(user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('webauthn/:id')
+  webauthnRemove(
+    @CurrentUser() user: SessionUser,
+    @Param('id') id: string,
+  ) {
+    return this.authService.webauthnRemove(user.id, id);
   }
 
   @UseGuards(JwtAuthGuard)

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import type { SessionUser } from '@nodedr-restaurant/types';
 import { Auth } from '../../common/decorators/auth.decorator';
@@ -75,6 +75,7 @@ export class CommerceController {
     return this.commerce.saveTerminal(branchId, body);
   }
 
+  /** Specific path before terminals/:id */
   @Auth('bills.print')
   @Post('terminals/push')
   async push(
@@ -84,6 +85,17 @@ export class CommerceController {
   ) {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     return this.commerce.pushToTerminal(branchId, body.terminalId, body.orderId, Number(body.amount));
+  }
+
+  @Auth('settings.manage')
+  @Delete('terminals/:id')
+  async deleteTerminal(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.commerce.deleteTerminal(branchId, id);
   }
 
   @Auth('bills.print')
@@ -116,6 +128,7 @@ export class CommerceController {
     return this.commerce.updateHouse(branchId, id, body);
   }
 
+  /** Specific path before a bare :id delete */
   @Auth('bills.print')
   @Post('house-accounts/:id/entries')
   async houseEntry(
@@ -126,6 +139,17 @@ export class CommerceController {
   ) {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     return this.commerce.postHouse(branchId, user.id, id, body);
+  }
+
+  @Auth('settings.manage')
+  @Delete('house-accounts/:id')
+  async deleteHouse(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.commerce.deleteHouse(branchId, id);
   }
 
   @Auth('settings.manage')

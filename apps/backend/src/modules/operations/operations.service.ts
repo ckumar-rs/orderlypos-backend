@@ -83,6 +83,43 @@ export class OperationsService {
     });
   }
 
+  async updateEquipment(
+    branchId: string,
+    id: string,
+    dto: Partial<EquipmentDto>,
+  ) {
+    const existing = await this.getEquipment(branchId, id);
+    const lastServicedAt =
+      dto.lastServicedAt !== undefined
+        ? dto.lastServicedAt
+          ? asDate(dto.lastServicedAt)
+          : null
+        : existing.lastServicedAt;
+    const serviceIntervalDays =
+      dto.serviceIntervalDays !== undefined
+        ? dto.serviceIntervalDays
+        : existing.serviceIntervalDays;
+    const lastIso = lastServicedAt
+      ? lastServicedAt.toISOString().slice(0, 10)
+      : null;
+    const due = nextDue(lastIso, serviceIntervalDays);
+    return this.prisma.equipment.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.location !== undefined ? { location: dto.location } : {}),
+        ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+        ...(dto.serviceIntervalDays !== undefined
+          ? { serviceIntervalDays: dto.serviceIntervalDays }
+          : {}),
+        ...(dto.lastServicedAt !== undefined
+          ? { lastServicedAt }
+          : {}),
+        nextDueAt: due ? asDate(due) : null,
+      },
+    });
+  }
+
   async retireEquipment(branchId: string, id: string) {
     await this.getEquipment(branchId, id);
     await this.prisma.equipment.update({

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import type {
   CreateStaffApiKeyDto,
+  RenameApiKeyDto,
   SessionUser,
 } from '@nodedr-restaurant/types';
 import { PrismaService } from '../prisma/prisma.service';
@@ -71,6 +72,29 @@ export class StaffApiKeysService {
       lastUsedAt: key.lastUsedAt,
       revokedAt: key.revokedAt,
     }));
+  }
+
+  async rename(actor: SessionUser, id: string, dto: RenameApiKeyDto) {
+    const key = await this.prisma.staffApiKey.findUnique({ where: { id } });
+    if (!key) throw new NotFoundException('API key not found');
+    if (key.userId !== actor.id) {
+      throw new ForbiddenException('You can only rename your own API keys');
+    }
+    if (key.revokedAt) {
+      throw new BadRequestException('Revoked API keys cannot be renamed');
+    }
+    const updated = await this.prisma.staffApiKey.update({
+      where: { id },
+      data: { name: dto.name },
+    });
+    return {
+      id: updated.id,
+      name: updated.name,
+      lastFour: updated.lastFour,
+      createdAt: updated.createdAt,
+      lastUsedAt: updated.lastUsedAt,
+      revokedAt: updated.revokedAt,
+    };
   }
 
   async revoke(actor: SessionUser, id: string) {

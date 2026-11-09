@@ -408,4 +408,39 @@ export class KdsService {
     if (unassigned) rows.push(unassigned);
     return rows;
   }
+
+  /**
+   * Clears kitchen tickets older than the service window from the pass by
+   * marking them SERVED. Open bills stay on Sales — only the KOT leaves the rail.
+   */
+  async clearStalePass(branchId: string, userId?: string, olderThanHours = 12) {
+    const cutoff = new Date(Date.now() - olderThanHours * 60 * 60 * 1000);
+    const stale = await this.prisma.kot.findMany({
+      where: {
+        order: { branchId },
+        status: { in: ['NEW', 'ACCEPTED', 'PREPARING', 'READY'] },
+        createdAt: { lt: cutoff },
+      },
+      select: { id: true, status: true },
+      take: 200,
+    });
+    let cleared = 0;
+    for (const kot of stale) {
+      await this.ordersService.setKotHeld(branchId, kot.id, false).catch(() => undefined);
+      // Walk forward to SERVED so timestamps/events stay consistent.
+      const path =
+        kot.status === 'NEW'
+          ? (['ACCEPTED', 'PREPARING', 'READY', 'SERVED'] as const)
+          : kot.status === 'ACCEPTED'
+            ? (['PREPARING', 'READY', 'SERVED'] as const)
+            : kot.status === 'PREPARING'
+              ? (['READY', 'SERVED'] as const)
+              : (['SERVED'] as const);
+      for (const next of path) {
+        await this.ordersService.updateKotStatus(branchId, kot.id, next, userId);
+      }
+      cleared += 1;
+    }
+    return { cleared, olderThanHours };
+  }
 }

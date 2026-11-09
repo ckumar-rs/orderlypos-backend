@@ -7,9 +7,16 @@ export const expenseSchema = z.object({
   category: z.string().trim().min(1).max(60),
   amount: z.coerce.number().positive(),
   note: z.string().max(300).optional(),
+  vendor: z.string().trim().max(120).optional(),
   paidFromCash: z.boolean().default(false),
 });
 export type ExpenseDto = z.infer<typeof expenseSchema>;
+
+export const cashClosingAdjustSchema = z.object({
+  countedCash: z.coerce.number().min(0).optional(),
+  note: z.string().max(300).optional(),
+});
+export type CashClosingAdjustDto = z.infer<typeof cashClosingAdjustSchema>;
 
 export const expenseDecisionSchema = z.object({
   status: z.enum(["APPROVED", "REJECTED"]),
@@ -28,9 +35,18 @@ export const cashClosingSchema = z.object({
   businessDate: isoDate,
   openingFloat: z.coerce.number().min(0).default(0),
   countedCash: z.coerce.number().min(0),
+  bankDrop: z.coerce.number().min(0).default(0),
+  safeDrop: z.coerce.number().min(0).default(0),
   note: z.string().max(300).optional(),
 });
 export type CashClosingDto = z.infer<typeof cashClosingSchema>;
+
+export const periodLockSchema = z.object({
+  fromDate: isoDate,
+  toDate: isoDate,
+  reason: z.string().trim().max(200).optional(),
+});
+export type PeriodLockDto = z.infer<typeof periodLockSchema>;
 
 export const ACCOUNT_TYPES = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"] as const;
 
@@ -41,6 +57,8 @@ export const ledgerAccountSchema = z.object({
   isActive: z.boolean().optional(),
 });
 export type LedgerAccountDto = z.infer<typeof ledgerAccountSchema>;
+export const ledgerAccountUpdateSchema = ledgerAccountSchema.partial();
+export type LedgerAccountUpdateDto = z.infer<typeof ledgerAccountUpdateSchema>;
 
 export const ledgerAccountMapSchema = z.object({
   sourceKey: z.string().trim().min(1).max(40),

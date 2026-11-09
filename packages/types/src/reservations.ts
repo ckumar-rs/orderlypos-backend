@@ -32,6 +32,14 @@ export const updateReservationStatusSchema = z.object({
 });
 export type UpdateReservationStatusDto = z.infer<typeof updateReservationStatusSchema>;
 
+export const updateReservationSchema = z.object({
+  customerName: z.string().min(1).optional(),
+  guestCount: z.number().int().positive().optional(),
+  reservedAt: z.coerce.date().optional(),
+  specialRequests: z.string().max(500).optional().nullable(),
+});
+export type UpdateReservationDto = z.infer<typeof updateReservationSchema>;
+
 export const waitlistStatusSchema = z.enum(["WAITING", "SEATED", "CANCELLED"]);
 export type WaitlistStatusDto = z.infer<typeof waitlistStatusSchema>;
 
@@ -43,6 +51,14 @@ export const createWaitlistEntrySchema = z.object({
   notes: z.string().optional(),
 });
 export type CreateWaitlistEntryDto = z.infer<typeof createWaitlistEntrySchema>;
+
+export const updateWaitlistEntrySchema = z.object({
+  customerName: z.string().min(1).optional(),
+  partySize: z.number().int().positive().optional(),
+  quotedWaitMinutes: z.number().int().nonnegative().optional().nullable(),
+  notes: z.string().max(500).optional().nullable(),
+});
+export type UpdateWaitlistEntryDto = z.infer<typeof updateWaitlistEntrySchema>;
 
 export const seatWaitlistEntrySchema = z.object({
   tableId: z.string().optional(),

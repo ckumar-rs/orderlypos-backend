@@ -52,11 +52,13 @@ function build() {
     guestCategories: jest.fn().mockResolvedValue([]),
   };
   const messaging = { dispatch: jest.fn().mockResolvedValue({ status: 'SENT', error: null }) };
+  const commerce = {};
   const service = new PublicKioskService(
     prisma as never,
     ordersService as never,
     publicMenu as never,
     messaging as never,
+    commerce as never,
   );
   return { service, prisma, ordersService, publicMenu, messaging };
 }

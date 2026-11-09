@@ -4,12 +4,14 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   UsePipes,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import {
   createIntegrationApiKeySchema,
+  renameApiKeySchema,
   type SessionUser,
 } from '@nodedr-restaurant/types';
 import { Auth } from '../common/decorators/auth.decorator';
@@ -35,6 +37,18 @@ export class IntegrationApiKeysController {
   @UsePipes(new ZodValidationPipe(createIntegrationApiKeySchema))
   create(@CurrentUser() user: SessionUser, @Body() body: unknown) {
     return this.integrationApiKeys.create(user, body as never);
+  }
+
+  @Auth('settings.manage')
+  @AuditAction('api_key.integration_renamed', 'IntegrationApiKey')
+  @Patch(':id')
+  @UsePipes(new ZodValidationPipe(renameApiKeySchema))
+  rename(
+    @CurrentUser() user: SessionUser,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    return this.integrationApiKeys.rename(user, id, body as never);
   }
 
   @Auth('settings.manage')

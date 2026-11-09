@@ -74,6 +74,8 @@ export const menuPriceRuleSchema = z.object({
   isActive: z.boolean().optional(),
 });
 export type MenuPriceRuleDto = z.infer<typeof menuPriceRuleSchema>;
+export const menuPriceRuleUpdateSchema = menuPriceRuleSchema.partial();
+export type MenuPriceRuleUpdateDto = z.infer<typeof menuPriceRuleUpdateSchema>;
 
 export const modifierSchema = z.object({
   name: z.string().min(1),
@@ -90,6 +92,15 @@ export const modifierImageSchema = z.object({
   imageUrl: z.string().trim().max(2048).nullable(),
 });
 export type ModifierImageDto = z.infer<typeof modifierImageSchema>;
+
+export const updateModifierSchema = z.object({
+  name: z.string().min(1).optional(),
+  imageUrl: z.string().trim().max(2048).optional().nullable(),
+  priceAdjustment: z.coerce.number().optional(),
+  isDefault: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+});
+export type UpdateModifierDto = z.infer<typeof updateModifierSchema>;
 
 export const modifierGroupSchema = z.object({
   name: z.string().min(1),
@@ -145,3 +156,14 @@ export const menuItemSchema = z.object({
     .optional(),
 });
 export type MenuItemDto = z.infer<typeof menuItemSchema>;
+
+export const menuReorderSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(2000),
+});
+export type MenuReorderDto = z.infer<typeof menuReorderSchema>;
+
+export const menuItemsReorderSchema = z.object({
+  categoryId: z.string().min(1).optional(),
+  ids: z.array(z.string().min(1)).min(1).max(2000),
+});
+export type MenuItemsReorderDto = z.infer<typeof menuItemsReorderSchema>;

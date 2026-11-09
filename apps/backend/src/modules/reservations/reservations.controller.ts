@@ -12,6 +12,7 @@ import { ApiTags } from '@nestjs/swagger';
 import {
   createReservationSchema,
   reservationDepositSchema,
+  updateReservationSchema,
   updateReservationStatusSchema,
   type SessionUser,
 } from '@nodedr-restaurant/types';
@@ -130,6 +131,7 @@ export class ReservationsController {
     return this.reservationsService.forfeitDeposit(branchId, user.id, id);
   }
 
+  /** Specific path before :id */
   @Auth('reservations.manage')
   @Patch(':id/status')
   @UsePipes(new ZodValidationPipe(updateReservationStatusSchema))
@@ -142,5 +144,18 @@ export class ReservationsController {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     const { status } = body as { status: never };
     return this.reservationsService.updateStatus(branchId, id, status, user.id);
+  }
+
+  @Auth('reservations.manage')
+  @Patch(':id')
+  @UsePipes(new ZodValidationPipe(updateReservationSchema))
+  async update(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.reservationsService.update(branchId, id, body as never);
   }
 }

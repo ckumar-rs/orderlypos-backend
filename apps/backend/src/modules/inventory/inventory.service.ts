@@ -71,13 +71,22 @@ export class InventoryService {
     const usedInRecipe = await this.prisma.recipeIngredient.count({
       where: { ingredientId: id },
     });
-    if (usedInRecipe > 0) {
-      throw new BadRequestException(
-        'Ingredient is used in a menu item recipe — remove it from every recipe first',
-      );
+    const usedInPrep = await this.prisma.prepRecipeLine.count({
+      where: { ingredientId: id },
+    });
+    const usedAsPrepOutput = await this.prisma.prepRecipe.count({
+      where: { outputIngredientId: id },
+    });
+    // Keep history when the ingredient is linked — deactivate instead of hard delete.
+    if (usedInRecipe > 0 || usedInPrep > 0 || usedAsPrepOutput > 0) {
+      await this.prisma.ingredient.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      return { ok: true, deactivated: true };
     }
     await this.prisma.ingredient.delete({ where: { id } });
-    return { ok: true };
+    return { ok: true, deactivated: false };
   }
 
   async lowStockIngredients(branchId: string) {
@@ -123,12 +132,14 @@ export class InventoryService {
       where: { supplierId: id },
     });
     if (usedInPo > 0) {
-      throw new BadRequestException(
-        'Supplier has purchase orders on record — deactivate instead of deleting',
-      );
+      await this.prisma.supplier.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      return { ok: true, deactivated: true };
     }
     await this.prisma.supplier.delete({ where: { id } });
-    return { ok: true };
+    return { ok: true, deactivated: false };
   }
 
   // --- Recipe costing -----------------------------------------------------------

@@ -104,6 +104,72 @@ export class PurchaseOrdersService {
     });
   }
 
+  /**
+   * Replace draft PO header + lines. Only DRAFT is editable so posted /
+   * sent / received POs stay immutable.
+   */
+  async updateDraft(branchId: string, id: string, dto: PurchaseOrderDto) {
+    const po = await this.prisma.purchaseOrder.findFirst({
+      where: { id, branchId },
+      select: { id: true, status: true },
+    });
+    if (!po) throw new NotFoundException('Purchase order not found');
+    if (po.status !== 'DRAFT') {
+      throw new BadRequestException(
+        'Only draft purchase orders can be edited',
+      );
+    }
+
+    const supplier = await this.prisma.supplier.findFirst({
+      where: { id: dto.supplierId, branchId },
+    });
+    if (!supplier)
+      throw new BadRequestException('Supplier not found in this branch');
+
+    const ingredientIds = dto.items.map((i) => i.ingredientId);
+    const ingredientCount = await this.prisma.ingredient.count({
+      where: { id: { in: ingredientIds }, branchId },
+    });
+    if (ingredientCount !== new Set(ingredientIds).size) {
+      throw new BadRequestException(
+        'One or more ingredients not found in this branch',
+      );
+    }
+
+    const totalAmount = round2(
+      dto.items.reduce((sum, i) => sum + i.quantityOrdered * i.unitCost, 0),
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.purchaseOrderItem.deleteMany({
+        where: { purchaseOrderId: id },
+      });
+      return tx.purchaseOrder.update({
+        where: { id },
+        data: {
+          supplierId: dto.supplierId,
+          ...(dto.expectedDate !== undefined
+            ? { expectedDate: dto.expectedDate }
+            : {}),
+          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+          totalAmount,
+          items: {
+            create: dto.items.map((i) => ({
+              ingredientId: i.ingredientId,
+              quantityOrdered: i.quantityOrdered,
+              unitCost: i.unitCost,
+            })),
+          },
+        },
+        include: {
+          supplier: { select: { id: true, name: true } },
+          items: true,
+          createdBy: { select: { id: true, name: true } },
+        },
+      });
+    });
+  }
+
   async updateStatus(
     branchId: string,
     id: string,

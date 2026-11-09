@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { SessionUser } from '@nodedr-restaurant/types';
@@ -269,6 +269,26 @@ export class ServiceDepthController {
   }
 
   @Auth('settings.manage')
+  @Post('whatsapp/disable')
+  async disableWhatsapp(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.depth.disableWhatsapp(branchId);
+  }
+
+  @Auth('settings.manage')
+  @Delete('whatsapp')
+  async revokeWhatsapp(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.depth.revokeWhatsapp(branchId);
+  }
+
+  @Auth('settings.manage')
   @Get('rates')
   rates(@CurrentUser() user: SessionUser) {
     return this.depth.listRates(user.restaurantId);
@@ -278,6 +298,12 @@ export class ServiceDepthController {
   @Post('rates')
   saveRate(@CurrentUser() user: SessionUser, @Body() body: { currency: string; rateToBase: number }) {
     return this.depth.saveRate(user.restaurantId, body.currency, Number(body.rateToBase));
+  }
+
+  @Auth('settings.manage')
+  @Delete('rates/:id')
+  deleteRate(@CurrentUser() user: SessionUser, @Param('id') id: string) {
+    return this.depth.deleteRate(user.restaurantId, id);
   }
 
   @Auth('settings.manage')
@@ -299,6 +325,22 @@ export class ServiceDepthController {
     @Body() body: { branchId: string; brandId: string | null },
   ) {
     return this.depth.assignBrand(user.restaurantId, body.branchId, body.brandId);
+  }
+
+  @Auth('settings.manage')
+  @Patch('brands/:id')
+  updateBrand(
+    @CurrentUser() user: SessionUser,
+    @Param('id') id: string,
+    @Body() body: { name: string },
+  ) {
+    return this.depth.updateBrand(user.restaurantId, id, body.name);
+  }
+
+  @Auth('settings.manage')
+  @Delete('brands/:id')
+  deleteBrand(@CurrentUser() user: SessionUser, @Param('id') id: string) {
+    return this.depth.deleteBrand(user.restaurantId, id);
   }
 
   @Auth('settings.manage')

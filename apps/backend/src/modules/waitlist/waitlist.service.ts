@@ -3,7 +3,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type { CreateWaitlistEntryDto } from '@nodedr-restaurant/types';
+import type {
+  CreateWaitlistEntryDto,
+  UpdateWaitlistEntryDto,
+} from '@nodedr-restaurant/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { suggestTable } from '../reservations/suggest-table';
@@ -30,6 +33,29 @@ export class WaitlistService {
       id: created.id,
     });
     return created;
+  }
+
+  async update(branchId: string, id: string, dto: UpdateWaitlistEntryDto) {
+    const entry = await this.prisma.waitlistEntry.findFirst({
+      where: { id, branchId },
+    });
+    if (!entry) throw new NotFoundException('Waitlist entry not found');
+    if (entry.status !== 'WAITING') {
+      throw new BadRequestException('Only a waiting party can be edited');
+    }
+    const updated = await this.prisma.waitlistEntry.update({
+      where: { id },
+      data: {
+        ...(dto.customerName !== undefined ? { customerName: dto.customerName } : {}),
+        ...(dto.partySize !== undefined ? { partySize: dto.partySize } : {}),
+        ...(dto.quotedWaitMinutes !== undefined
+          ? { quotedWaitMinutes: dto.quotedWaitMinutes }
+          : {}),
+        ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+      },
+    });
+    this.realtime.emitToBranch(branchId, 'waitlist.updated', { id: updated.id });
+    return updated;
   }
 
   async seat(branchId: string, id: string, tableId?: string) {

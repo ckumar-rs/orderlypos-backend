@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import type {
   CreateIntegrationApiKeyDto,
+  RenameApiKeyDto,
   SessionUser,
 } from '@nodedr-restaurant/types';
 import { PrismaService } from '../prisma/prisma.service';
@@ -91,6 +92,32 @@ export class IntegrationApiKeysService {
       lastUsedAt: key.lastUsedAt,
       revokedAt: key.revokedAt,
     }));
+  }
+
+  async rename(actor: SessionUser, id: string, dto: RenameApiKeyDto) {
+    const key = await this.prisma.integrationApiKey.findFirst({
+      where: { id, restaurantId: actor.restaurantId },
+      include: { branch: { select: { id: true, name: true } } },
+    });
+    if (!key) throw new NotFoundException('API key not found');
+    if (key.revokedAt) {
+      throw new BadRequestException('Revoked API keys cannot be renamed');
+    }
+    const updated = await this.prisma.integrationApiKey.update({
+      where: { id },
+      data: { name: dto.name },
+      include: { branch: { select: { id: true, name: true } } },
+    });
+    return {
+      id: updated.id,
+      name: updated.name,
+      lastFour: updated.lastFour,
+      branch: updated.branch,
+      scopes: updated.scopes,
+      createdAt: updated.createdAt,
+      lastUsedAt: updated.lastUsedAt,
+      revokedAt: updated.revokedAt,
+    };
   }
 
   async revoke(actor: SessionUser, id: string) {

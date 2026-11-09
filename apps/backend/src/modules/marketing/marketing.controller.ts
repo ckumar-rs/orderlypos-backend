@@ -14,11 +14,17 @@ import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import {
   campaignSchema,
+  campaignUpdateSchema,
   couponSchema,
+  couponUpdateSchema,
   promotionSchema,
+  promotionUpdateSchema,
   type CampaignDto,
+  type CampaignUpdateDto,
   type CouponDto,
+  type CouponUpdateDto,
   type PromotionDto,
+  type PromotionUpdateDto,
   type SessionUser,
 } from '@nodedr-restaurant/types';
 import { Auth } from '../../common/decorators/auth.decorator';
@@ -64,6 +70,20 @@ export class MarketingController {
   ) {
     await this.access(u, branchId);
     return this.marketing.createCoupon(branchId, body);
+  }
+
+  @Auth('marketing.manage')
+  @AuditAction('coupon.updated', 'Coupon')
+  @Patch('coupons/:id')
+  @UsePipes(new ZodValidationPipe(couponUpdateSchema))
+  async updateCoupon(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: CouponUpdateDto,
+  ) {
+    await this.access(u, branchId);
+    return this.marketing.updateCoupon(branchId, id, body);
   }
 
   @Auth('marketing.manage')
@@ -115,6 +135,20 @@ export class MarketingController {
   }
 
   @Auth('marketing.manage')
+  @AuditAction('promotion.updated', 'Promotion')
+  @Patch('promotions/:id')
+  @UsePipes(new ZodValidationPipe(promotionUpdateSchema))
+  async updatePromotion(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: PromotionUpdateDto,
+  ) {
+    await this.access(u, branchId);
+    return this.marketing.updatePromotion(branchId, id, body);
+  }
+
+  @Auth('marketing.manage')
   @AuditAction('promotion.toggled', 'Promotion')
   @Patch('promotions/:id/active')
   async promotionActive(
@@ -160,6 +194,20 @@ export class MarketingController {
   ) {
     await this.access(u, branchId);
     return this.marketing.createCampaign(branchId, body);
+  }
+
+  @Auth('marketing.manage')
+  @AuditAction('campaign.updated', 'Campaign')
+  @Patch('campaigns/:id')
+  @UsePipes(new ZodValidationPipe(campaignUpdateSchema))
+  async updateCampaign(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: CampaignUpdateDto,
+  ) {
+    await this.access(u, branchId);
+    return this.marketing.updateCampaign(branchId, id, body);
   }
 
   @Auth('marketing.manage')
@@ -222,6 +270,70 @@ export class MarketingController {
     return toCsv(
       ['Name', campaign.channel === 'EMAIL' ? 'Email' : 'Phone', 'Message'],
       recipients.map((r) => [r.name, r.contact, campaign.message]),
+    );
+  }
+
+  @Auth('marketing.manage')
+  @Get('campaigns/:id/report')
+  async campaignReport(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Query('batchId') batchId?: string,
+    @Query('status') status?: string,
+    @Query('take') take?: string,
+  ) {
+    await this.access(u, branchId);
+    return this.marketing.campaignReport(branchId, id, {
+      batchId,
+      status,
+      take: take ? Number(take) : undefined,
+    });
+  }
+
+  @Auth('marketing.manage', 'data.export')
+  @Get('campaigns/:id/report.csv')
+  @Header('Content-Type', 'text/csv; charset=utf-8')
+  async campaignReportCsv(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Query('batchId') batchId?: string,
+    @Query('status') status?: string,
+  ) {
+    await this.access(u, branchId);
+    const report = await this.marketing.campaignReport(branchId, id, {
+      batchId,
+      status,
+      take: 5000,
+    });
+    return toCsv(
+      [
+        'To',
+        'Status',
+        'Provider',
+        'Provider ref',
+        'Error',
+        'Attempts',
+        'Created',
+        'Sent',
+        'Delivered',
+        'Read',
+        'Batch',
+      ],
+      report.messages.map((m) => [
+        m.to,
+        m.status,
+        m.provider ?? '',
+        m.providerRef ?? '',
+        m.error ?? '',
+        m.attempts,
+        m.createdAt.toISOString(),
+        m.sentAt?.toISOString() ?? '',
+        m.deliveredAt?.toISOString() ?? '',
+        m.readAt?.toISOString() ?? '',
+        m.campaignBatchId ?? '',
+      ]),
     );
   }
 }

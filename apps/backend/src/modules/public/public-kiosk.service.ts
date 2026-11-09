@@ -7,9 +7,15 @@ import {
 import { resolveTaxLabel, type KioskOrderDto } from '@nodedr-restaurant/types';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CommerceService } from '../commerce/commerce.service';
 import { normalizeMsisdn } from '../messaging/messaging';
 import { MessagingService } from '../messaging/messaging.service';
 import { OrdersService } from '../orders/orders.service';
+import {
+  readRestaurantSettingsMap,
+  restaurantPaymentPrefs,
+  seedRestaurantSettings,
+} from '../settings/settings-kv';
 import { kioskReceiptText } from './kiosk-receipt';
 import { PublicMenuService } from './public-menu.service';
 
@@ -30,7 +36,32 @@ export class PublicKioskService {
     private readonly ordersService: OrdersService,
     private readonly publicMenu: PublicMenuService,
     private readonly messaging: MessagingService,
+    private readonly commerce: CommerceService,
   ) {}
+
+  private async payBlock(
+    restaurantId: string,
+    restaurant: {
+      payCash: boolean;
+      payCard: boolean;
+      payUpi: boolean;
+      payOther: boolean;
+    },
+  ) {
+    await seedRestaurantSettings(this.prisma, restaurantId);
+    const prefs = restaurantPaymentPrefs(
+      await readRestaurantSettingsMap(this.prisma, restaurantId),
+    );
+    return {
+      cash: restaurant.payCash,
+      card: restaurant.payCard,
+      upi: restaurant.payUpi,
+      other: restaurant.payOther,
+      preferred: prefs.preferred || null,
+      order: prefs.order,
+      cashLabel: prefs.cashLabel,
+    };
+  }
 
   private async resolveBranch(kioskToken: string) {
     // A short/garbage token can never match; avoids a pointless query.
@@ -72,13 +103,18 @@ export class PublicKioskService {
             demo: false,
           }
         : null,
-      pay: {
-        cash: branch.restaurant.payCash,
-        card: branch.restaurant.payCard,
-        upi: branch.restaurant.payUpi,
-        other: branch.restaurant.payOther,
-      },
+      pay: await this.payBlock(branch.restaurantId, branch.restaurant),
       demoMode: branch.restaurant.demoMode,
+      gatewayAvailable: Boolean(
+        await this.prisma.paymentGateway.findFirst({
+          where: {
+            restaurantId: branch.restaurantId,
+            enabled: true,
+            baseUrl: { not: null },
+          },
+          select: { id: true },
+        }),
+      ),
       onlineOrdersPaused: branch.onlineOrdersPaused,
       // Empty categories are not worth a button on a touchscreen.
       categories: categories.filter((c) => c.items.length > 0),
@@ -153,41 +189,73 @@ export class PublicKioskService {
     }
   }
 
-  /** Marks a kiosk order paid with a fake UPI reference. Demo mode only. */
-  async demoPay(kioskToken: string, orderNumber: string) {
+  /** Starts gateway checkout for a kiosk order, or reports unpaid UPI-only state. */
+  async startPay(kioskToken: string, orderNumber: string) {
     const branch = await this.resolveBranch(kioskToken);
-    if (!branch.restaurant.demoMode) {
-      throw new BadRequestException(
-        'Demo payment is off. Turn on Demo mode in Settings',
-      );
-    }
-    const order = await this.prisma.order.findFirst({
-      where: { branchId: branch.id, orderNumber, type: 'KIOSK' },
-      include: { items: true },
-    });
-    if (!order) throw new NotFoundException('Order not found');
+    const order = await this.kioskOrder(branch.id, orderNumber);
     if (order.status === 'PAID') {
       return { ...this.present(order, branch.restaurant.currency), paid: true };
     }
-    if (order.status !== 'OPEN') {
+    if (order.status !== 'OPEN' && order.status !== 'BILLED') {
       throw new BadRequestException('This order can no longer be paid');
     }
-    const actorId = await this.resolveActor(branch.id);
-    await this.ordersService.checkout(branch.id, order.id, actorId, {
-      payments: [
-        {
-          method: 'UPI',
-          amount: Number(order.totalAmount),
-          reference: `DEMO${order.orderNumber.replace(/\D/g, '').slice(-8)}`,
-        },
-      ],
-      requestId: `demo-${order.id}`.slice(0, 64),
+    const due = Number(order.totalAmount);
+    const gateway = await this.prisma.paymentGateway.findFirst({
+      where: {
+        restaurantId: branch.restaurantId,
+        enabled: true,
+        NOT: { baseUrl: null },
+      },
     });
-    const paid = await this.prisma.order.findFirstOrThrow({
-      where: { id: order.id },
+    if (gateway?.baseUrl) {
+      try {
+        const intent = await this.commerce.createIntent(
+          branch.id,
+          branch.restaurantId,
+          order.id,
+          gateway.provider,
+          due,
+        );
+        return {
+          ...this.present(order, branch.restaurant.currency),
+          paid: false,
+          checkoutUrl: intent.checkoutUrl,
+          intentId: intent.id,
+        };
+      } catch {
+        // Fall through to UPI / counter when the gateway is not reachable yet.
+      }
+    }
+    return {
+      ...this.present(order, branch.restaurant.currency),
+      paid: false,
+      checkoutUrl: null,
+    };
+  }
+
+  async orderStatus(kioskToken: string, orderNumber: string) {
+    const branch = await this.resolveBranch(kioskToken);
+    const order = await this.kioskOrder(branch.id, orderNumber);
+    const intent = await this.prisma.paymentIntent.findFirst({
+      where: { orderId: order.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    return {
+      ...this.present(order, branch.restaurant.currency),
+      paid: order.status === 'PAID',
+      status: order.status,
+      checkoutUrl: intent?.status === 'PENDING' ? intent.checkoutUrl : null,
+      intentStatus: intent?.status ?? null,
+    };
+  }
+
+  private async kioskOrder(branchId: string, orderNumber: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { branchId, orderNumber, type: 'KIOSK' },
       include: { items: true },
     });
-    return { ...this.present(paid, branch.restaurant.currency), paid: true };
+    if (!order) throw new NotFoundException('Order not found');
+    return order;
   }
 
   /** Sends the kiosk receipt to the guest's WhatsApp. Paid and unpaid both say which they are. */
@@ -216,6 +284,15 @@ export class PublicKioskService {
     });
     if (!order) throw new NotFoundException('Order not found');
     const paid = order.status === 'PAID';
+    const pay = await this.payBlock(branch.restaurantId, branch.restaurant);
+    const preferredLabel =
+      pay.preferred === 'CASH'
+        ? pay.cashLabel
+        : pay.preferred || pay.cashLabel;
+    const unpaidHint =
+      pay.upi && branch.restaurant.upiVpa
+        ? `This order is not paid. Pay by UPI or ${pay.cashLabel} at the counter.`
+        : `This order is not paid. Pay by ${preferredLabel} at the counter.`;
     const sent = await this.messaging.dispatch({
       restaurantId: branch.restaurantId,
       branchId: branch.id,
@@ -232,6 +309,7 @@ export class PublicKioskService {
         })),
         total: order.totalAmount.toString(),
         paid,
+        unpaidHint,
       }),
     });
     return { status: sent?.status ?? 'QUEUED', error: sent?.error ?? null };
@@ -293,6 +371,7 @@ export class PublicKioskService {
   private present(
     order: {
       orderNumber: string;
+      status?: string;
       subtotal: Prisma.Decimal;
       taxAmount: Prisma.Decimal;
       totalAmount: Prisma.Decimal;
@@ -318,7 +397,7 @@ export class PublicKioskService {
       subtotal: order.subtotal.toString(),
       taxAmount: order.taxAmount.toString(),
       totalAmount: order.totalAmount.toString(),
-      paid: false,
+      paid: order.status === 'PAID',
     };
   }
 }

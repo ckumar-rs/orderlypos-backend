@@ -8,6 +8,7 @@ import { Prisma } from '@prisma/client';
 import type {
   CampaignDto,
   CouponDto,
+  CouponUpdateDto,
   PromotionDto,
 } from '@nodedr-restaurant/types';
 import { BranchTimeService } from '../../common/services/branch-time.service';
@@ -79,6 +80,41 @@ export class MarketingService {
     });
   }
 
+  async updateCoupon(branchId: string, id: string, dto: CouponUpdateDto) {
+    const existing = await this.getCoupon(branchId, id);
+    const code =
+      dto.code !== undefined ? dto.code.toUpperCase() : existing.code;
+    if (code !== existing.code) {
+      if (existing.usedCount > 0) {
+        throw new BadRequestException(
+          'This coupon has already been used — create a new code instead of renaming it',
+        );
+      }
+      const clash = await this.prisma.coupon.findUnique({
+        where: { branchId_code: { branchId, code } },
+      });
+      if (clash) throw new BadRequestException('That coupon code already exists');
+    }
+    return this.prisma.coupon.update({
+      where: { id },
+      data: {
+        code,
+        ...(dto.kind !== undefined ? { kind: dto.kind } : {}),
+        ...(dto.value !== undefined ? { value: dto.value } : {}),
+        ...(dto.minOrderAmount !== undefined
+          ? { minOrderAmount: dto.minOrderAmount }
+          : {}),
+        ...(dto.maxDiscount !== undefined ? { maxDiscount: dto.maxDiscount } : {}),
+        ...(dto.validFrom !== undefined ? { validFrom: asDate(dto.validFrom) } : {}),
+        ...(dto.validUntil !== undefined
+          ? { validUntil: asDate(dto.validUntil) }
+          : {}),
+        ...(dto.usageLimit !== undefined ? { usageLimit: dto.usageLimit } : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+      },
+    });
+  }
+
   async setCouponActive(branchId: string, id: string, isActive: boolean) {
     await this.getCoupon(branchId, id);
     return this.prisma.coupon.update({ where: { id }, data: { isActive } });
@@ -130,6 +166,57 @@ export class MarketingService {
         startMinute: toMinutes(dto.startTime),
         endMinute: toMinutes(dto.endTime),
         isActive: dto.isActive,
+      },
+    });
+  }
+
+  async updatePromotion(
+    branchId: string,
+    id: string,
+    dto: Partial<PromotionDto>,
+  ) {
+    const existing = await this.prisma.promotion.findFirst({
+      where: { id, branchId },
+    });
+    if (!existing) throw new NotFoundException('Promotion not found');
+    const kind = dto.kind ?? existing.kind;
+    return this.prisma.promotion.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.kind !== undefined ? { kind: dto.kind } : {}),
+        ...(dto.value !== undefined || dto.kind !== undefined
+          ? { value: kind === 'BOGO' ? 0 : (dto.value ?? Number(existing.value)) }
+          : {}),
+        ...(dto.buyQuantity !== undefined ? { buyQuantity: dto.buyQuantity } : {}),
+        ...(dto.getQuantity !== undefined ? { getQuantity: dto.getQuantity } : {}),
+        ...(dto.audience !== undefined ? { audience: dto.audience } : {}),
+        ...(dto.categoryId !== undefined
+          ? { categoryId: dto.categoryId ?? null }
+          : {}),
+        ...(dto.minOrderAmount !== undefined
+          ? { minOrderAmount: dto.minOrderAmount }
+          : {}),
+        ...(dto.customerId !== undefined
+          ? { customerId: dto.customerId || null }
+          : {}),
+        ...(dto.weatherCode !== undefined
+          ? { weatherCode: dto.weatherCode?.trim() || null }
+          : {}),
+        ...(dto.bundleMenuItemId !== undefined
+          ? { bundleMenuItemId: dto.bundleMenuItemId || null }
+          : {}),
+        ...(dto.allDay !== undefined ? { allDay: dto.allDay } : {}),
+        ...(dto.daysOfWeek !== undefined
+          ? { daysOfWeek: [...new Set(dto.daysOfWeek)].sort() }
+          : {}),
+        ...(dto.startTime !== undefined
+          ? { startMinute: toMinutes(dto.startTime) }
+          : {}),
+        ...(dto.endTime !== undefined
+          ? { endMinute: toMinutes(dto.endTime) }
+          : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
       },
     });
   }
@@ -373,6 +460,47 @@ export class MarketingService {
     });
   }
 
+  async updateCampaign(
+    branchId: string,
+    id: string,
+    dto: Partial<CampaignDto>,
+  ) {
+    const existing = await this.prisma.campaign.findFirst({
+      where: { id, branchId },
+    });
+    if (!existing) throw new NotFoundException('Campaign not found');
+    const segment = dto.segment ?? existing.segment;
+    const tierId =
+      dto.tierId !== undefined
+        ? dto.tierId
+        : segment === 'TIER'
+          ? existing.tierId
+          : null;
+    const rfmLabel =
+      dto.rfmLabel !== undefined
+        ? dto.rfmLabel
+        : segment === 'RFM'
+          ? existing.rfmLabel
+          : null;
+    if (segment === 'TIER' && !tierId) {
+      throw new BadRequestException('Pick a membership tier for this audience');
+    }
+    if (segment === 'RFM' && !rfmLabel) {
+      throw new BadRequestException('Pick an RFM label for this audience');
+    }
+    return this.prisma.campaign.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.channel !== undefined ? { channel: dto.channel } : {}),
+        ...(dto.segment !== undefined ? { segment: dto.segment } : {}),
+        ...(dto.message !== undefined ? { message: dto.message } : {}),
+        tierId: segment === 'TIER' ? tierId : null,
+        rfmLabel: segment === 'RFM' ? rfmLabel : null,
+      },
+    });
+  }
+
   async deleteCampaign(branchId: string, id: string) {
     const c = await this.prisma.campaign.findFirst({ where: { id, branchId } });
     if (!c) throw new NotFoundException('Campaign not found');
@@ -456,9 +584,24 @@ export class MarketingService {
       );
     if (recipients.length === 0)
       throw new BadRequestException('No customers match this campaign yet');
-    if (recipients.length > 500)
+
+    const branchMeta = await this.prisma.branch.findUnique({
+      where: { id: branchId },
+      select: {
+        restaurantId: true,
+        restaurant: { select: { name: true } },
+      },
+    });
+    const bulkReady =
+      campaign.channel === 'WHATSAPP' && branchMeta
+        ? await this.messaging.isBulkWhatsAppReady(branchMeta.restaurantId)
+        : false;
+    const maxRecipients = bulkReady ? 5_000 : 500;
+    if (recipients.length > maxRecipients)
       throw new BadRequestException(
-        'A campaign can reach at most 500 customers at once — narrow the audience',
+        bulkReady
+          ? `A campaign can reach at most ${maxRecipients} customers at once — narrow the audience`
+          : 'A campaign can reach at most 500 customers at once — narrow the audience, or link the bulk WhatsApp platform in Operations',
       );
 
     // Reserve the send slot first (atomic), so two simultaneous clicks
@@ -483,11 +626,7 @@ export class MarketingService {
           campaign.id,
           'Email is not set up on this server (SMTP_URL / SMTP_FROM)',
         );
-      const restaurant = await this.prisma.branch.findUnique({
-        where: { id: branchId },
-        select: { restaurant: { select: { name: true } } },
-      });
-      const footer = `\n\n—\nYou are receiving this because you are a customer of ${restaurant?.restaurant.name ?? 'our restaurant'}. Reply to this email to stop receiving offers.`;
+      const footer = `\n\n—\nYou are receiving this because you are a customer of ${branchMeta?.restaurant.name ?? 'our restaurant'}. Reply to this email to stop receiving offers.`;
       result = await this.email.sendEach(
         recipients.map((r) => ({
           to: r.contact,
@@ -496,13 +635,14 @@ export class MarketingService {
         })),
       );
     } else {
-      const restaurant = await this.prisma.branch.findUnique({
-        where: { id: branchId },
-        select: { restaurantId: true },
-      });
+      const restaurant = branchMeta;
       const channel = campaign.channel === 'SMS' ? 'SMS' : 'WHATSAPP';
       const ready = restaurant
-        ? await this.messaging.isChannelReady(restaurant.restaurantId, channel)
+        ? await this.messaging.isChannelReady(
+            restaurant.restaurantId,
+            channel,
+            'CAMPAIGN',
+          )
         : false;
       const hasHook = await this.webhooks.hasSubscriber(
         branchId,
@@ -514,6 +654,7 @@ export class MarketingService {
           `Sending ${campaign.channel === 'SMS' ? 'SMS' : 'WhatsApp'} needs a provider in Operations or a webhook subscribed to "campaign.message"`,
         );
       result = { sent: 0, failed: 0 };
+      const batchId = `batch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       if (ready && restaurant) {
         for (const r of recipients) {
           const out = await this.messaging.dispatch({
@@ -523,15 +664,19 @@ export class MarketingService {
             purpose: 'CAMPAIGN',
             to: r.contact,
             body: campaign.message,
+            campaignId: campaign.id,
+            campaignBatchId: batchId,
           });
-          if (out?.status === 'SENT') result.sent += 1;
-          else result.failed += 1;
+          if (out?.status === 'SENT' || out?.status === 'DELIVERED' || out?.status === 'READ') {
+            result.sent += 1;
+          } else result.failed += 1;
         }
       }
       if (hasHook) {
         for (const r of recipients) {
           await this.webhooks.emitForBranch(branchId, 'campaign.message', {
             campaignId: campaign.id,
+            campaignBatchId: batchId,
             channel: campaign.channel,
             to: r.contact,
             name: r.name,
@@ -540,12 +685,154 @@ export class MarketingService {
         }
         if (!ready) result = { sent: recipients.length, failed: 0 };
       }
+      await this.prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { lastSentCount: result.sent },
+      });
+      return { ...result, batchId };
     }
     await this.prisma.campaign.update({
       where: { id: campaign.id },
       data: { lastSentCount: result.sent },
     });
     return result;
+  }
+
+  /**
+   * Delivery report for a campaign: status totals for the latest (or chosen)
+   * send batch, plus overall campaign totals and a message sample/list.
+   */
+  async campaignReport(
+    branchId: string,
+    campaignId: string,
+    opts?: { batchId?: string | null; take?: number; status?: string | null },
+  ) {
+    const campaign = await this.prisma.campaign.findFirst({
+      where: { id: campaignId, branchId },
+    });
+    if (!campaign) throw new NotFoundException('Campaign not found');
+
+    const latestBatch = await this.prisma.outboundMessage.findFirst({
+      where: { campaignId, branchId },
+      orderBy: { createdAt: 'desc' },
+      select: { campaignBatchId: true },
+    });
+    const batchId =
+      opts?.batchId?.trim() || latestBatch?.campaignBatchId || null;
+
+    const countByStatus = async (where: Prisma.OutboundMessageWhereInput) => {
+      const rows = await this.prisma.outboundMessage.groupBy({
+        by: ['status'],
+        where,
+        _count: { _all: true },
+      });
+      const counts: {
+        QUEUED: number;
+        SENT: number;
+        DELIVERED: number;
+        READ: number;
+        FAILED: number;
+        OPTED_OUT: number;
+        total: number;
+      } = {
+        QUEUED: 0,
+        SENT: 0,
+        DELIVERED: 0,
+        READ: 0,
+        FAILED: 0,
+        OPTED_OUT: 0,
+        total: 0,
+      };
+      for (const row of rows) {
+        const n = row._count._all;
+        counts.total += n;
+        if (row.status === 'QUEUED') counts.QUEUED = n;
+        else if (row.status === 'SENT') counts.SENT = n;
+        else if (row.status === 'DELIVERED') counts.DELIVERED = n;
+        else if (row.status === 'READ') counts.READ = n;
+        else if (row.status === 'FAILED') counts.FAILED = n;
+        else if (row.status === 'OPTED_OUT') counts.OPTED_OUT = n;
+      }
+      return counts;
+    };
+
+    const baseWhere: Prisma.OutboundMessageWhereInput = {
+      campaignId,
+      branchId,
+    };
+    const batchWhere: Prisma.OutboundMessageWhereInput = {
+      ...baseWhere,
+      ...(batchId ? { campaignBatchId: batchId } : {}),
+    };
+    const statusFilter = opts?.status?.trim().toUpperCase();
+    const listWhere: Prisma.OutboundMessageWhereInput = {
+      ...batchWhere,
+      ...(statusFilter
+        ? {
+            status: statusFilter as
+              | 'QUEUED'
+              | 'SENT'
+              | 'DELIVERED'
+              | 'READ'
+              | 'FAILED'
+              | 'OPTED_OUT',
+          }
+        : {}),
+    };
+
+    const take = Math.min(5_000, Math.max(1, opts?.take ?? 100));
+    const [batch, overall, messages, batches] = await Promise.all([
+      countByStatus(batchWhere),
+      countByStatus(baseWhere),
+      this.prisma.outboundMessage.findMany({
+        where: listWhere,
+        orderBy: { createdAt: 'desc' },
+        take,
+        select: {
+          id: true,
+          to: true,
+          status: true,
+          provider: true,
+          providerRef: true,
+          error: true,
+          attempts: true,
+          createdAt: true,
+          sentAt: true,
+          deliveredAt: true,
+          readAt: true,
+          campaignBatchId: true,
+        },
+      }),
+      this.prisma.outboundMessage.findMany({
+        where: { ...baseWhere, campaignBatchId: { not: null } },
+        distinct: ['campaignBatchId'],
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        select: { campaignBatchId: true, createdAt: true },
+      }),
+    ]);
+
+    return {
+      campaign: {
+        id: campaign.id,
+        name: campaign.name,
+        channel: campaign.channel,
+        segment: campaign.segment,
+        message: campaign.message,
+        lastSentAt: campaign.lastSentAt,
+        lastSentCount: campaign.lastSentCount,
+      },
+      batchId,
+      batch,
+      overall,
+      batches: batches
+        .filter((b) => b.campaignBatchId)
+        .map((b) => ({
+          id: b.campaignBatchId as string,
+          createdAt: b.createdAt,
+        })),
+      messages,
+    };
   }
 
   private async releaseAndFail(campaignId: string, message: string) {

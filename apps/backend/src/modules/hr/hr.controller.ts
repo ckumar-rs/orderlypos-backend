@@ -12,13 +12,19 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import {
+  leaveBalanceSchema,
   leaveDecisionSchema,
   leaveRequestSchema,
+  managerLeaveSchema,
   payrollRunSchema,
+  performanceReviewSchema,
   shiftSchema,
   staffPaySchema,
+  type LeaveBalanceDto,
   type LeaveRequestDto,
+  type ManagerLeaveDto,
   type PayrollRunDto,
+  type PerformanceReviewDto,
   type SessionUser,
   type ShiftDto,
   type StaffPayDto,
@@ -84,6 +90,19 @@ export class HrController {
   }
 
   @Auth('staff.manage')
+  @Patch('shifts/:id')
+  @UsePipes(new ZodValidationPipe(shiftSchema))
+  async updateShift(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+    @Body() body: ShiftDto,
+  ) {
+    await this.access(u, branchId);
+    return this.hr.updateShift(branchId, id, body);
+  }
+
+  @Auth('staff.manage')
   @Delete('shifts/:id')
   async deleteShift(
     @CurrentUser() u: SessionUser,
@@ -106,6 +125,18 @@ export class HrController {
     return this.hr.requestLeave(u.id, body);
   }
 
+  @Auth('staff.manage')
+  @Post('leave/for-staff')
+  @UsePipes(new ZodValidationPipe(managerLeaveSchema))
+  async createLeaveForStaff(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Body() body: ManagerLeaveDto,
+  ) {
+    await this.access(u, branchId);
+    return this.hr.createLeaveForStaff(branchId, u.id, body);
+  }
+
   @Auth()
   @Get('leave/mine')
   myLeave(@CurrentUser() u: SessionUser) {
@@ -124,6 +155,43 @@ export class HrController {
   }
 
   @Auth('staff.manage')
+  @Get('leave/balances')
+  async leaveBalances(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Query('year') year?: string,
+  ) {
+    await this.access(u, branchId);
+    return this.hr.listBalances(
+      branchId,
+      year ? Number(year) : undefined,
+    );
+  }
+
+  @Auth()
+  @Get('leave/balances/mine')
+  async myLeaveBalances(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Query('year') year?: string,
+  ) {
+    await this.access(u, branchId);
+    return this.hr.myBalances(branchId, u.id, year ? Number(year) : undefined);
+  }
+
+  @Auth('staff.manage')
+  @Put('leave/balances')
+  @UsePipes(new ZodValidationPipe(leaveBalanceSchema))
+  async setLeaveBalance(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Body() body: LeaveBalanceDto,
+  ) {
+    await this.access(u, branchId);
+    return this.hr.setBalance(branchId, body);
+  }
+
+  @Auth('staff.manage')
   @AuditAction('leave.decided', 'LeaveRequest')
   @Patch('leave/:id')
   @UsePipes(new ZodValidationPipe(leaveDecisionSchema))
@@ -135,6 +203,19 @@ export class HrController {
   ) {
     await this.access(u, branchId);
     return this.hr.decideLeave(branchId, id, u.id, body.status);
+  }
+
+  @Auth()
+  @AuditAction('leave.cancelled', 'LeaveRequest')
+  @Post('leave/:id/cancel')
+  async cancelLeave(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access(u, branchId);
+    const asManager = u.permissions.includes('staff.manage');
+    return this.hr.cancelLeave(branchId, id, u.id, asManager);
   }
 
   // --- Pay profiles ---
@@ -185,6 +266,17 @@ export class HrController {
   }
 
   @Auth('staff.manage')
+  @Get('payroll/:id/payslip')
+  async payslip(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access(u, branchId);
+    return this.hr.payslipCsv(branchId, id);
+  }
+
+  @Auth('staff.manage')
   @AuditAction('payroll.created', 'PayrollRun')
   @Post('payroll')
   @UsePipes(new ZodValidationPipe(payrollRunSchema))
@@ -232,5 +324,28 @@ export class HrController {
   ) {
     await this.access(u, branchId);
     return this.hr.performance(branchId, from, to);
+  }
+
+  @Auth('staff.manage')
+  @Post('performance/reviews')
+  @UsePipes(new ZodValidationPipe(performanceReviewSchema))
+  async createReview(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Body() body: PerformanceReviewDto,
+  ) {
+    await this.access(u, branchId);
+    return this.hr.createReview(branchId, u.id, body);
+  }
+
+  @Auth('staff.manage')
+  @Delete('performance/reviews/:id')
+  async deleteReview(
+    @CurrentUser() u: SessionUser,
+    @Query('branchId') branchId: string,
+    @Param('id') id: string,
+  ) {
+    await this.access(u, branchId);
+    return this.hr.deleteReview(branchId, id);
   }
 }

@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import type { OutboundChannel, OutboundPurpose } from '@prisma/client';
+import { timingSafeEqual } from 'crypto';
 import { openSecret } from '../../auth/totp';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -18,6 +19,8 @@ export type DispatchInput = {
   purpose: OutboundPurpose;
   to: string;
   body: string;
+  campaignId?: string | null;
+  campaignBatchId?: string | null;
 };
 
 type RestaurantMessaging = {
@@ -27,6 +30,10 @@ type RestaurantMessaging = {
   waCloudAccessTokenSealed: string | null;
   waCloudTemplateName: string | null;
   waCloudTemplateLang: string | null;
+  bulkWaEnabled: boolean;
+  bulkWaBaseUrl: string | null;
+  bulkWaApiKeySealed: string | null;
+  bulkWaWebhookSecretSealed: string | null;
   smsEnabled: boolean;
   smsProvider: string | null;
   smsBaseUrl: string | null;
@@ -53,14 +60,24 @@ export class MessagingService {
     );
   }
 
-  async isChannelReady(restaurantId: string, channel: OutboundChannel) {
+  async isChannelReady(
+    restaurantId: string,
+    channel: OutboundChannel,
+    purpose?: OutboundPurpose,
+  ) {
     const restaurant = await this.load(restaurantId);
     try {
-      this.assertReady(restaurant, channel);
+      this.assertReady(restaurant, channel, purpose);
       return true;
     } catch {
       return false;
     }
+  }
+
+  /** Campaigns may use the linked bulk WhatsApp platform for higher volume. */
+  async isBulkWhatsAppReady(restaurantId: string) {
+    const restaurant = await this.load(restaurantId);
+    return this.bulkReady(restaurant);
   }
 
   async dispatch(input: DispatchInput) {
@@ -68,6 +85,8 @@ export class MessagingService {
       data: {
         restaurantId: input.restaurantId,
         branchId: input.branchId ?? null,
+        campaignId: input.campaignId ?? null,
+        campaignBatchId: input.campaignBatchId ?? null,
         channel: input.channel,
         purpose: input.purpose,
         to: input.to,
@@ -106,14 +125,22 @@ export class MessagingService {
 
   async flushOne(id: string) {
     const row = await this.prisma.outboundMessage.findUnique({ where: { id } });
-    if (!row || row.status === 'SENT') return row;
+    if (
+      !row ||
+      row.status === 'SENT' ||
+      row.status === 'DELIVERED' ||
+      row.status === 'READ' ||
+      row.status === 'OPTED_OUT'
+    ) {
+      return row;
+    }
     const restaurant = await this.load(row.restaurantId);
     const attempts = row.attempts + 1;
     try {
-      this.assertReady(restaurant, row.channel);
+      this.assertReady(restaurant, row.channel, row.purpose);
       const sent =
         row.channel === 'WHATSAPP'
-          ? await this.sendWhatsApp(restaurant, row.to, row.body)
+          ? await this.sendWhatsApp(restaurant, row.to, row.body, row.purpose, row.id)
           : await this.sendSms(restaurant, row.to, row.body);
       return this.prisma.outboundMessage.update({
         where: { id },
@@ -151,6 +178,10 @@ export class MessagingService {
         waCloudAccessTokenSealed: true,
         waCloudTemplateName: true,
         waCloudTemplateLang: true,
+        bulkWaEnabled: true,
+        bulkWaBaseUrl: true,
+        bulkWaApiKeySealed: true,
+        bulkWaWebhookSecretSealed: true,
         smsEnabled: true,
         smsProvider: true,
         smsBaseUrl: true,
@@ -164,10 +195,27 @@ export class MessagingService {
     return restaurant;
   }
 
-  private assertReady(restaurant: RestaurantMessaging, channel: OutboundChannel) {
+  private bulkReady(restaurant: RestaurantMessaging) {
+    return Boolean(
+      restaurant.bulkWaEnabled &&
+        restaurant.bulkWaBaseUrl?.trim() &&
+        restaurant.bulkWaApiKeySealed,
+    );
+  }
+
+  private assertReady(
+    restaurant: RestaurantMessaging,
+    channel: OutboundChannel,
+    purpose?: OutboundPurpose,
+  ) {
     if (channel === 'WHATSAPP') {
+      if (purpose === 'CAMPAIGN' && this.bulkReady(restaurant)) return;
       if (!restaurant.waCloudEnabled) {
-        throw new BadRequestException('WhatsApp Cloud API is off in Operations');
+        throw new BadRequestException(
+          purpose === 'CAMPAIGN'
+            ? 'Turn on the bulk WhatsApp platform or WhatsApp Cloud API in Operations'
+            : 'WhatsApp Cloud API is off in Operations',
+        );
       }
       if (!restaurant.waCloudBaseUrl?.trim()) {
         throw new BadRequestException('Set the WhatsApp Cloud API URL in Operations');
@@ -209,7 +257,12 @@ export class MessagingService {
     restaurant: RestaurantMessaging,
     phone: string,
     body: string,
+    purpose: OutboundPurpose,
+    clientMessageId: string,
   ) {
+    if (purpose === 'CAMPAIGN' && this.bulkReady(restaurant)) {
+      return this.sendBulkWhatsApp(restaurant, phone, body, clientMessageId);
+    }
     const to = this.destination(restaurant, phone);
     const token = openSecret(restaurant.waCloudAccessTokenSealed!, this.keyMaterial());
     const url = whatsappMessagesUrl(
@@ -233,6 +286,105 @@ export class MessagingService {
       ? String((json.messages[0] as { id?: string } | undefined)?.id ?? '')
       : '';
     return { provider: 'WHATSAPP_CLOUD', providerRef: ref || null };
+  }
+
+  /**
+   * Standalone bulk WhatsApp platform contract:
+   * POST {baseUrl}/v1/messages
+   * Authorization: Bearer {apiKey}
+   * body: { to, body, clientMessageId, channel: "WHATSAPP" }
+   * response: { id?: string }
+   */
+  private async sendBulkWhatsApp(
+    restaurant: RestaurantMessaging,
+    phone: string,
+    body: string,
+    clientMessageId: string,
+  ) {
+    const to = this.destination(restaurant, phone);
+    const apiKey = openSecret(restaurant.bulkWaApiKeySealed!, this.keyMaterial());
+    const base = restaurant.bulkWaBaseUrl!.trim().replace(/\/+$/, '');
+    const url = `${base}/v1/messages`;
+    const json = await this.postJson(
+      url,
+      {
+        to,
+        body,
+        clientMessageId,
+        channel: 'WHATSAPP',
+        purpose: 'CAMPAIGN',
+      },
+      {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+    );
+    const ref =
+      typeof json.id === 'string'
+        ? json.id
+        : typeof json.messageId === 'string'
+          ? json.messageId
+          : null;
+    return { provider: 'BULK_WHATSAPP', providerRef: ref };
+  }
+
+  /** Inbound delivery / read reports from the linked bulk WhatsApp platform. */
+  async applyBulkStatus(input: {
+    clientMessageId?: string | null;
+    providerRef?: string | null;
+    status: string;
+    error?: string | null;
+    secretHeader?: string | null;
+  }) {
+    const status = input.status.trim().toUpperCase();
+    if (!['SENT', 'DELIVERED', 'READ', 'FAILED', 'OPTED_OUT'].includes(status)) {
+      throw new BadRequestException('Unknown status');
+    }
+    const or = [
+      ...(input.clientMessageId ? [{ id: input.clientMessageId }] : []),
+      ...(input.providerRef ? [{ providerRef: input.providerRef }] : []),
+    ];
+    if (or.length === 0) {
+      throw new BadRequestException('Provide clientMessageId or providerRef');
+    }
+    const row = await this.prisma.outboundMessage.findFirst({
+      where: { OR: or },
+      include: {
+        restaurant: {
+          select: { bulkWaWebhookSecretSealed: true },
+        },
+      },
+    });
+    if (!row) throw new BadRequestException('Message not found');
+    const expected = row.restaurant.bulkWaWebhookSecretSealed
+      ? openSecret(row.restaurant.bulkWaWebhookSecretSealed, this.keyMaterial())
+      : '';
+    if (expected) {
+      const got = (input.secretHeader ?? '').trim();
+      if (!got || got.length !== expected.length) {
+        throw new BadRequestException('Invalid webhook secret');
+      }
+      const a = Buffer.from(got);
+      const b = Buffer.from(expected);
+      if (!timingSafeEqual(a, b)) {
+        throw new BadRequestException('Invalid webhook secret');
+      }
+    }
+    const now = new Date();
+    return this.prisma.outboundMessage.update({
+      where: { id: row.id },
+      data: {
+        status: status as 'SENT' | 'DELIVERED' | 'READ' | 'FAILED' | 'OPTED_OUT',
+        error: status === 'FAILED' ? (input.error ?? 'Failed').slice(0, 500) : null,
+        providerRef: input.providerRef ?? row.providerRef,
+        sentAt: status === 'SENT' && !row.sentAt ? now : row.sentAt,
+        deliveredAt:
+          status === 'DELIVERED' || status === 'READ'
+            ? row.deliveredAt ?? now
+            : row.deliveredAt,
+        readAt: status === 'READ' ? now : row.readAt,
+      },
+    });
   }
 
   private async sendSms(

@@ -25,9 +25,9 @@ export const kotStatusSchema = z.enum([
 export type KotStatusDto = z.infer<typeof kotStatusSchema>;
 
 export const paymentMethodSchema = z.enum([
+  "UPI",
   "CASH",
   "CARD",
-  "UPI",
   "WALLET",
   "BANK_TRANSFER",
   "GIFT_CARD",
@@ -35,6 +35,15 @@ export const paymentMethodSchema = z.enum([
   "OTHER",
 ]);
 export type PaymentMethodDto = z.infer<typeof paymentMethodSchema>;
+
+/** Guest- and staff-facing label. Pass restaurant_settings.cash_label for CASH. */
+export function paymentMethodLabel(method: string, cashLabel = "Cash"): string {
+  if (method === "CASH") return cashLabel;
+  if (method === "STORE_CREDIT") return "Store credit";
+  if (method === "GIFT_CARD") return "Gift card";
+  if (method === "BANK_TRANSFER") return "Bank";
+  return method.replaceAll("_", " ");
+}
 
 export const cartItemModifierSchema = z.object({
   modifierId: z.string(),
@@ -150,6 +159,8 @@ export type ExchangeItemDto = z.infer<typeof exchangeItemSchema>;
 // only way staff can tell whose order this is (shown on KDS/order lists).
 export const publicOrderSchema = z.object({
   guestName: z.string().trim().min(1, "Please enter your name").max(60),
+  /** Optional — find-or-creates a loyalty profile on this branch and links the bill. */
+  phone: z.string().trim().min(8).max(20).optional(),
   // Kept for every retry of the same basket, including one queued while offline.
   requestId: z.string().trim().min(8).max(80).optional(),
   items: z.array(cartItemSchema).min(1),
@@ -327,5 +338,7 @@ export const rejectOrderSchema = z.object({
 export type RejectOrderDto = z.infer<typeof rejectOrderSchema>;
 
 
-export const publicRequestSchema = z.object({ type: z.enum(["WAITER", "BILL"]) });
+export const publicRequestSchema = z.object({
+  type: z.enum(["WAITER", "BILL", "PAID_CLAIM", "COD"]),
+});
 export type PublicRequestDto = z.infer<typeof publicRequestSchema>;

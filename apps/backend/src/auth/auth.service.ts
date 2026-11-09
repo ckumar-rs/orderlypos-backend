@@ -1,27 +1,42 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
+  Logger,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import {
   DEFAULT_ROLE_PERMISSIONS,
   PERMISSIONS,
   STAFF_ROLES,
+  type AuthProfile,
+  type ChangePasswordDto,
+  type ForgotPasswordDto,
   type LoginDto,
   type PinLoginDto,
   type RegisterDto,
+  type ResetPasswordDto,
   type SessionUser,
+  type UpdateProfileDto,
 } from '@nodedr-restaurant/types';
 import * as bcrypt from 'bcrypt';
 import { AuditService } from '../audit/audit.service';
+import { EmailService } from '../modules/email/email.service';
+import {
+  seedBranchSettings,
+  seedRestaurantSettings,
+} from '../modules/settings/settings-kv';
 import { PrismaService } from '../prisma/prisma.service';
 import { TwoFactorService } from './two-factor.service';
 import { authenticatorCounter, readClientData, verifyAssertion } from './webauthn';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private readonly challenges = new Map<string, { challenge: string; expires: number }>();
 
   constructor(
@@ -29,6 +44,8 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly twoFactor: TwoFactorService,
     private readonly audit: AuditService,
+    private readonly email: EmailService,
+    private readonly config: ConfigService,
   ) {}
 
   private toSessionUser(user: {
@@ -105,6 +122,8 @@ export class AuthService {
       const branch = await tx.branch.create({
         data: { restaurantId: restaurant.id, name: dto.branchName },
       });
+      await seedRestaurantSettings(tx, restaurant.id);
+      await seedBranchSettings(tx, branch.id);
 
       let ownerRoleId = '';
       for (const roleName of STAFF_ROLES) {
@@ -281,6 +300,15 @@ export class AuthService {
     return rows;
   }
 
+  async webauthnRemove(userId: string, id: string) {
+    const row = await this.prisma.webAuthnCredential.findFirst({
+      where: { id, userId },
+    });
+    if (!row) throw new NotFoundException('Passkey not found');
+    await this.prisma.webAuthnCredential.delete({ where: { id } });
+    return { ok: true };
+  }
+
   private passkeyOptions(key: string) {
     const challenge = randomBytes(32).toString('base64url');
     this.challenges.set(key, { challenge, expires: Date.now() + 5 * 60_000 });
@@ -320,6 +348,229 @@ export class AuthService {
     } catch {
       // An expired cookie still clears. There is no user to attach.
     }
+  }
+
+  async getProfile(userId: string): Promise<AuthProfile> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        restaurant: { select: { name: true } },
+        role: {
+          include: { permissions: { include: { permission: true } } },
+        },
+        branches: { select: { branch: { select: { id: true, name: true } } } },
+      },
+    });
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Session no longer valid');
+    }
+    return {
+      ...this.toSessionUser(user),
+      email: user.email,
+      phone: user.phone,
+      restaurantName: user.restaurant.name,
+      roleLabel: user.role.label,
+      branches: user.branches.map((row) => row.branch),
+    };
+  }
+
+  async updateProfile(userId: string, dto: UpdateProfileDto): Promise<AuthProfile> {
+    const existing = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!existing || !existing.isActive) {
+      throw new UnauthorizedException('Session no longer valid');
+    }
+
+    const email =
+      dto.email === undefined
+        ? undefined
+        : dto.email === null || dto.email.trim() === ''
+          ? null
+          : dto.email.trim().toLowerCase();
+    const phone =
+      dto.phone === undefined
+        ? undefined
+        : dto.phone === null || dto.phone.trim() === ''
+          ? null
+          : dto.phone.trim();
+
+    if (email) {
+      const clash = await this.prisma.user.findFirst({
+        where: {
+          restaurantId: existing.restaurantId,
+          email,
+          id: { not: userId },
+        },
+      });
+      if (clash) {
+        throw new ConflictException('Another account already uses this email');
+      }
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        name: dto.name,
+        ...(email !== undefined ? { email } : {}),
+        ...(phone !== undefined ? { phone } : {}),
+      },
+    });
+
+    await this.audit.record({
+      userId,
+      action: 'profile.updated',
+      entity: 'User',
+      entityId: userId,
+      metadata: { name: dto.name, email, phone },
+    });
+
+    return this.getProfile(userId);
+  }
+
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, isActive: true, passwordHash: true },
+    });
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Session no longer valid');
+    }
+    const valid = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+    if (!valid) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+    if (dto.currentPassword === dto.newPassword) {
+      throw new BadRequestException('New password must be different');
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash: await bcrypt.hash(dto.newPassword, 12) },
+    });
+
+    await this.audit.record({
+      userId,
+      action: 'profile.password_changed',
+      entity: 'User',
+      entityId: userId,
+    });
+
+    return { ok: true };
+  }
+
+  private hashResetToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private appBaseUrl() {
+    return (
+      this.config.get<string>('APP_URL') ??
+      this.config.get<string>('PUBLIC_WEB_URL') ??
+      this.config.get<string>('NEXT_PUBLIC_SITE_URL') ??
+      'http://localhost:3000'
+    ).replace(/\/$/, '');
+  }
+
+  /**
+   * Always returns the same shape so callers cannot probe which emails exist.
+   * Sends mail when the restaurant (or instance) has SMTP configured.
+   */
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const email = dto.email.trim().toLowerCase();
+    const user = await this.prisma.user.findFirst({
+      where: { email, isActive: true },
+      select: { id: true, name: true, email: true, restaurantId: true },
+    });
+
+    if (user?.email) {
+      const token = randomBytes(32).toString('base64url');
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          passwordResetTokenHash: this.hashResetToken(token),
+          passwordResetExpiresAt: expiresAt,
+        },
+      });
+
+      const link = `${this.appBaseUrl()}/reset-password?token=${encodeURIComponent(token)}`;
+      const canEmail = await this.email.isConfiguredFor(user.restaurantId);
+      if (canEmail) {
+        try {
+          await this.email.send(
+            {
+              to: user.email,
+              subject: 'Reset your OrderlyPOS password',
+              text: [
+                `Hi ${user.name},`,
+                '',
+                'We received a request to reset your OrderlyPOS password.',
+                `Open this link within one hour to choose a new password:`,
+                link,
+                '',
+                'If you did not ask for this, you can ignore this email.',
+              ].join('\n'),
+            },
+            user.restaurantId,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Password reset email failed for ${user.email}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } else {
+        // Self-hosted installs without SMTP still get a usable path via server logs.
+        this.logger.warn(
+          `Password reset for ${user.email} — email is not configured. Reset link (1h): ${link}`,
+        );
+      }
+
+      await this.audit.record({
+        userId: user.id,
+        action: 'auth.password_reset_requested',
+        entity: 'User',
+        entityId: user.id,
+        metadata: { emailed: canEmail },
+      });
+    }
+
+    return {
+      ok: true,
+      message:
+        'If that email is on an account, we sent reset instructions. Check your inbox, or ask an owner to reset your password under Settings → Staff when email is not set up.',
+    };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const tokenHash = this.hashResetToken(dto.token.trim());
+    const user = await this.prisma.user.findFirst({
+      where: {
+        passwordResetTokenHash: tokenHash,
+        passwordResetExpiresAt: { gt: new Date() },
+        isActive: true,
+      },
+      select: { id: true },
+    });
+    if (!user) {
+      throw new BadRequestException('This reset link is invalid or has expired.');
+    }
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: await bcrypt.hash(dto.newPassword, 12),
+        passwordResetTokenHash: null,
+        passwordResetExpiresAt: null,
+      },
+    });
+
+    await this.audit.record({
+      userId: user.id,
+      action: 'auth.password_reset_completed',
+      entity: 'User',
+      entityId: user.id,
+    });
+
+    return { ok: true };
   }
 
   private async issueSession(

@@ -17,30 +17,44 @@ export interface GstRow {
 }
 
 /**
- * Groups order lines by tax rate. Prices are stored tax-inclusive, so a
- * line's tax is lineTotal x r / (100 + r). `factor` scales every line by
- * the share of the order that was actually charged after discounts
- * (1 = no discount), so the report reflects what was really collected.
+ * Groups order lines by tax rate. Inclusive mode: tax is lineTotal × r / (100 + r).
+ * Exclusive mode: tax is lineTotal × r / 100 and total = taxable + tax.
+ * `factor` scales every line by the share charged after discounts.
  */
-export function gstSummary(lines: (GstLine & { factor: number })[]): {
+export function gstSummary(
+  lines: (GstLine & { factor: number })[],
+  taxMode: 'INCLUSIVE' | 'EXCLUSIVE' = 'INCLUSIVE',
+): {
   rows: GstRow[];
   totalTaxable: number;
   totalTax: number;
 } {
-  const byRate = new Map<number, { total: number; tax: number }>();
+  const byRate = new Map<number, { taxable: number; tax: number; total: number }>();
   for (const l of lines) {
     const charged = l.lineTotal * l.factor;
-    const tax = (charged * l.taxRatePercent) / (100 + l.taxRatePercent);
-    const row = byRate.get(l.taxRatePercent) ?? { total: 0, tax: 0 };
-    row.total += charged;
+    let taxable: number;
+    let tax: number;
+    let total: number;
+    if (taxMode === 'EXCLUSIVE') {
+      taxable = charged;
+      tax = (charged * l.taxRatePercent) / 100;
+      total = taxable + tax;
+    } else {
+      tax = (charged * l.taxRatePercent) / (100 + l.taxRatePercent);
+      taxable = charged - tax;
+      total = charged;
+    }
+    const row = byRate.get(l.taxRatePercent) ?? { taxable: 0, tax: 0, total: 0 };
+    row.taxable += taxable;
     row.tax += tax;
+    row.total += total;
     byRate.set(l.taxRatePercent, row);
   }
   const rows = [...byRate.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([ratePercent, v]) => ({
       ratePercent,
-      taxableValue: round2(v.total - v.tax),
+      taxableValue: round2(v.taxable),
       tax: round2(v.tax),
       total: round2(v.total),
     }));
@@ -51,7 +65,7 @@ export function gstSummary(lines: (GstLine & { factor: number })[]): {
   };
 }
 
-/** Cash the till should hold at close of day. */
+/** Cash the till should hold at close of day (before bank/safe drops). */
 export function expectedCash(
   openingFloat: number,
   cashSales: number,
@@ -59,4 +73,13 @@ export function expectedCash(
   cashExpenses: number,
 ): number {
   return round2(openingFloat + cashSales - cashRefunds - cashExpenses);
+}
+
+/** Counted cash kept after bank and safe drops — next day's suggested float. */
+export function retainedCash(
+  countedCash: number,
+  bankDrop: number,
+  safeDrop: number,
+): number {
+  return round2(Math.max(0, countedCash - bankDrop - safeDrop));
 }

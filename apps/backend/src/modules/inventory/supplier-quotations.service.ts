@@ -117,6 +117,63 @@ export class SupplierQuotationsService {
     });
   }
 
+  async updateDraft(branchId: string, id: string, dto: SupplierQuotationDto) {
+    const quotation = await this.getQuotation(branchId, id);
+    if (quotation.status !== 'DRAFT') {
+      throw new BadRequestException('Only draft quotations can be edited');
+    }
+
+    const supplier = await this.prisma.supplier.findFirst({
+      where: { id: dto.supplierId, branchId },
+    });
+    if (!supplier)
+      throw new BadRequestException('Supplier not found in this branch');
+
+    const ingredientIds = dto.items.map((i) => i.ingredientId);
+    const ingredientCount = await this.prisma.ingredient.count({
+      where: { id: { in: ingredientIds }, branchId },
+    });
+    if (ingredientCount !== new Set(ingredientIds).size) {
+      throw new BadRequestException(
+        'One or more ingredients not found in this branch',
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.supplierQuotationItem.deleteMany({
+        where: { supplierQuotationId: id },
+      });
+      return tx.supplierQuotation.update({
+        where: { id },
+        data: {
+          supplierId: dto.supplierId,
+          validUntil: dto.validUntil,
+          notes: dto.notes,
+          items: {
+            create: dto.items.map((i) => ({
+              ingredientId: i.ingredientId,
+              quantityQuoted: i.quantityQuoted,
+              unitPrice: i.unitPrice,
+            })),
+          },
+        },
+        include: {
+          supplier: { select: { id: true, name: true } },
+          items: { include: { ingredient: true } },
+        },
+      });
+    });
+  }
+
+  async deleteDraft(branchId: string, id: string) {
+    const quotation = await this.getQuotation(branchId, id);
+    if (quotation.status !== 'DRAFT') {
+      throw new BadRequestException('Only draft quotations can be deleted');
+    }
+    await this.prisma.supplierQuotation.delete({ where: { id } });
+    return { ok: true };
+  }
+
   async updateStatus(branchId: string, id: string, status: QuotationStatus) {
     const quotation = await this.getQuotation(branchId, id);
     const allowed = NEXT_STATUS[quotation.status];
