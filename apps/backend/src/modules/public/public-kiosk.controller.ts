@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Post, UsePipes } from '@nestjs/common';
+
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { kioskOrderSchema, type KioskOrderDto } from '@nodedr-restaurant/types';
@@ -38,11 +39,20 @@ export class PublicKioskController {
   }
 
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  @Post(':kioskToken/orders/:orderNumber/demo-pay')
-  demoPay(
+  @Post(':kioskToken/orders/:orderNumber/pay')
+  startPay(
     @Param('kioskToken') kioskToken: string,
     @Param('orderNumber') orderNumber: string,
   ) {
-    return this.kiosk.demoPay(kioskToken, orderNumber);
+    return this.kiosk.startPay(kioskToken, orderNumber);
+  }
+
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @Get(':kioskToken/orders/:orderNumber')
+  orderStatus(
+    @Param('kioskToken') kioskToken: string,
+    @Param('orderNumber') orderNumber: string,
+  ) {
+    return this.kiosk.orderStatus(kioskToken, orderNumber);
   }
 }
