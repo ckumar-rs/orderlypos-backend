@@ -449,6 +449,24 @@ async function main() {
     }
   }
 
+  // Demo outlet already has floor + menu — mark first-run setup done so
+  // owner@demo.local lands on the dashboard, not the setup wizard.
+  // New signups still get onboarding_completed=false via seedRestaurantSettings.
+  for (const [key, value] of [
+    ['onboarding_enabled', 'true'],
+    ['onboarding_completed', 'true'],
+    ['onboarding_skipped', 'false'],
+    ['onboarding_step', 'done'],
+  ] as const) {
+    await prisma.restaurantSetting.upsert({
+      where: {
+        restaurantId_key: { restaurantId: restaurant.id, key },
+      },
+      update: { value },
+      create: { restaurantId: restaurant.id, key, value },
+    });
+  }
+
   console.log('Seed complete.');
 }
 

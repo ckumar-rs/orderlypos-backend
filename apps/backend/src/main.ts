@@ -106,12 +106,8 @@ async function bootstrap() {
     }),
   );
   app.use(cookieParser());
-  const origins = (process.env.CORS_ORIGIN ?? 'http://localhost:1995')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
   app.enableCors({
-    origin: origins,
+    origin: process.env.CORS_ORIGIN ?? 'http://localhost:1995',
     credentials: true,
   });
   app.setGlobalPrefix('api');
@@ -137,7 +133,7 @@ async function bootstrap() {
   }
 
   const port = process.env.PORT ?? 4000;
-  await app.listen(port, '0.0.0.0');
+  await app.listen(port);
   console.log(
     `OrderlyPOS API listening on :${port} (docs at /api/docs)`,
   );

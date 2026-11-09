@@ -15,6 +15,12 @@ describe('AccountingService day windows', () => {
       expense: {
         aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 0 } }),
       },
+      cashClosing: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+      branchSetting: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
     };
     const time = { tzForBranch: jest.fn().mockResolvedValue('Asia/Kolkata') };
     return {

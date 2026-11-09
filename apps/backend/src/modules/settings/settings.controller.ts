@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags } from '@nestjs/swagger';
 import {
   branchSettingsSchema,
+  onboardingPatchSchema,
   restaurantSettingsSchema,
   type SessionUser,
 } from '@nodedr-restaurant/types';
@@ -121,5 +122,32 @@ export class SettingsController {
     @Body() body: { to?: string },
   ) {
     return this.settingsService.sendTestEmail(user.restaurantId, user.id, body?.to);
+  }
+
+  @Auth('settings.manage')
+  @Get('onboarding')
+  async getOnboarding(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.settingsService.getOnboarding(user.restaurantId, branchId);
+  }
+
+  @Auth('settings.manage')
+  @Patch('onboarding')
+  @UsePipes(new ZodValidationPipe(onboardingPatchSchema))
+  async patchOnboarding(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.settingsService.patchOnboarding(
+      user.restaurantId,
+      user.id,
+      branchId,
+      body as never,
+    );
   }
 }

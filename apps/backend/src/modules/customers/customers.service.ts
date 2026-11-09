@@ -8,6 +8,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { randomInt } from 'crypto';
 import type {
   CustomerDto,
+  CustomerFindOrCreateDto,
   CustomerFollowUpDto,
   CustomerNoteDto,
   EmployeeDiscountPolicyDto,
@@ -424,6 +425,46 @@ export class CustomersService {
     const data = await this.customerData(branchId, dto);
     const row = await this.prisma.customer.create({ data: { ...data, branchId } });
     return openCustomerFields(row, this.sealKey());
+  }
+
+  /**
+   * Till / floor: match this branch only by last-10 phone digits, then create
+   * or fill a missing name. Never looks across restaurants or branches.
+   */
+  async findOrCreate(branchId: string, dto: CustomerFindOrCreateDto) {
+    const digits = dto.phone.replace(/\D/g, '');
+    if (digits.length < 8 || digits.length > 15) {
+      throw new BadRequestException('Enter a valid phone number');
+    }
+    const tail = digits.slice(-10);
+    const existing = await this.prisma.customer.findMany({
+      where: { branchId, phone: { contains: tail } },
+      take: 20,
+    });
+    const match = existing.find((row) => {
+      const rowDigits = (row.phone ?? '').replace(/\D/g, '');
+      return rowDigits.slice(-10) === tail;
+    });
+
+    if (match) {
+      if (dto.name?.trim() && !match.name) {
+        const updated = await this.prisma.customer.update({
+          where: { id: match.id },
+          data: { name: dto.name.trim() },
+        });
+        return { customer: openCustomerFields(updated, this.sealKey()), created: false };
+      }
+      return { customer: openCustomerFields(match, this.sealKey()), created: false };
+    }
+
+    const data = await this.customerData(branchId, {
+      phone: digits,
+      ...(dto.name?.trim() ? { name: dto.name.trim() } : {}),
+    });
+    const row = await this.prisma.customer.create({
+      data: { ...data, branchId },
+    });
+    return { customer: openCustomerFields(row, this.sealKey()), created: true };
   }
 
   /**

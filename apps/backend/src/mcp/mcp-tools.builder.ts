@@ -44,9 +44,9 @@ const TABLE_STATUS_VALUES = [
   'OUT_OF_SERVICE',
 ] as const;
 const PAYMENT_METHOD_VALUES = [
+  'UPI',
   'CASH',
   'CARD',
-  'UPI',
   'WALLET',
   'BANK_TRANSFER',
   'GIFT_CARD',

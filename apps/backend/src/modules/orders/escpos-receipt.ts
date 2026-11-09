@@ -10,6 +10,7 @@
 // too; only which rows get printed differs.
 
 import {
+  paymentMethodLabel,
   resolveTaxIdLabel,
   resolveTaxLabel,
   TAX_REGIME_PRESETS,
@@ -230,7 +231,7 @@ export function buildReceiptEscPosJob({
   if (order.payments.length > 0) {
     w.rule();
     for (const p of order.payments) {
-      w.row(`Paid (${p.method})`, money(p.amount));
+      w.row(`Paid (${paymentMethodLabel(p.method)})`, money(p.amount));
       if (p.tendered != null && p.changeGiven != null && p.changeGiven > 0) {
         w.row(`  Received`, money(p.tendered));
         w.row(`  Change`, money(p.changeGiven));

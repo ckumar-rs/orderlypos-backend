@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { paymentMethodLabel } from '@nodedr-restaurant/types';
 import { branchGstState, indiaPlaceOfSupply, splitIndiaGst } from '../../common/india-gst';
 
 export interface ReceiptPdfInput {
@@ -65,7 +66,7 @@ export function buildReceiptPdf(input: ReceiptPdfInput): Promise<Buffer> {
     doc.fontSize(12).text(`Total ${money(input.totalAmount)}`);
     doc.moveDown();
     for (const payment of input.payments) {
-      doc.fontSize(10).text(`${payment.method} ${money(payment.amount)}`);
+      doc.fontSize(10).text(`${paymentMethodLabel(payment.method)} ${money(payment.amount)}`);
     }
     doc.moveDown();
     doc.text('Paid in full.');

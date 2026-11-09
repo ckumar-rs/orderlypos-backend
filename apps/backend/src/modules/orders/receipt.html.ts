@@ -17,6 +17,7 @@ import { qrSvg } from '../verifactu/verifactu.qr';
 import { branchGstState, indiaPlaceOfSupply, splitIndiaGst } from '../../common/india-gst';
 import type { ReceiptVerifactu } from './escpos-receipt';
 import {
+  paymentMethodLabel,
   resolveTaxIdLabel,
   resolveTaxLabel,
   TAX_REGIME_PRESETS,
@@ -191,7 +192,7 @@ export function buildReceiptHtml({
 
   const paymentRows = order.payments.flatMap((p) => {
     const rows = [
-      `<tr><td>Paid (${esc(p.method)})</td><td class="num">${money(p.amount)}</td></tr>`,
+      `<tr><td>Paid (${esc(paymentMethodLabel(p.method))})</td><td class="num">${money(p.amount)}</td></tr>`,
     ];
     if (p.tendered != null && p.changeGiven != null && p.changeGiven > 0) {
       rows.push(

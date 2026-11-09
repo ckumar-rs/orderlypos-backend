@@ -8,6 +8,7 @@ import { buildUpiUri } from '../../common/upi';
 import { PrismaService } from '../../prisma/prisma.service';
 import { whatsappCatalogMessagePayload, whatsappDocumentPayload, whatsappImagePayload, whatsappMediaUrl, whatsappMessagesUrl, whatsappTextPayload } from '../messaging/messaging';
 import { buildReceiptPdf } from '../orders/receipt-pdf';
+import { CommerceService } from '../commerce/commerce.service';
 import { OrdersService } from '../orders/orders.service';
 import {
   CatalogInbound,
@@ -32,6 +33,8 @@ export class CatalogOrderService {
     private readonly config: ConfigService,
     @Inject(forwardRef(() => OrdersService))
     private readonly orders: OrdersService,
+    @Inject(forwardRef(() => CommerceService))
+    private readonly commerce: CommerceService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -252,6 +255,7 @@ export class CatalogOrderService {
     const branch = await this.prisma.branch.findUnique({
       where: { id: connection.branchId },
       select: {
+        restaurantId: true,
         onlineOrdersPaused: true,
         restaurant: { select: { name: true, currency: true, upiVpa: true, upiPayeeName: true } },
       },
@@ -332,12 +336,39 @@ export class CatalogOrderService {
         validatedCart: plan.items,
         rejectionReason: null,
       });
-      const reply = catalogOrderReply({
-        orderNumber: order.orderNumber,
-        total: Number(order.totalAmount),
-        currency: branch.restaurant.currency || 'INR',
-        upiVpa: branch.restaurant.upiVpa,
+      let checkoutUrl: string | null = null;
+      const gateway = await this.prisma.paymentGateway.findFirst({
+        where: {
+          restaurantId: branch.restaurantId,
+          enabled: true,
+          NOT: { baseUrl: null },
+        },
       });
+      if (gateway?.baseUrl) {
+        try {
+          const intent = await this.commerce.createIntent(
+            connection.branchId,
+            branch.restaurantId,
+            order.id,
+            gateway.provider,
+            Number(order.totalAmount),
+          );
+          checkoutUrl = intent.checkoutUrl;
+        } catch {
+          checkoutUrl = null;
+        }
+      }
+      const reply = [
+        catalogOrderReply({
+          orderNumber: order.orderNumber,
+          total: Number(order.totalAmount),
+          currency: branch.restaurant.currency || 'INR',
+          upiVpa: branch.restaurant.upiVpa,
+        }),
+        checkoutUrl ? `Pay online: ${checkoutUrl}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n');
       try {
         await this.sendPayment(connection, inbound.from!, reply, {
           vpa: branch.restaurant.upiVpa,

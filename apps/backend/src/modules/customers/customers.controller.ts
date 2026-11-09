@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import {
+  customerFindOrCreateSchema,
   customerFollowUpSchema,
   customerImportSchema,
   customerNoteSchema,
@@ -414,6 +415,18 @@ export class CustomersController {
   ) {
     await this.branchAccess.assertAccess(user.restaurantId, branchId);
     return this.customersService.getById(branchId, id);
+  }
+
+  @Auth('customers.manage')
+  @Post('find-or-create')
+  @UsePipes(new ZodValidationPipe(customerFindOrCreateSchema))
+  async findOrCreate(
+    @CurrentUser() user: SessionUser,
+    @Query('branchId') branchId: string,
+    @Body() body: unknown,
+  ) {
+    await this.branchAccess.assertAccess(user.restaurantId, branchId);
+    return this.customersService.findOrCreate(branchId, body as never);
   }
 
   @Auth('customers.manage')
