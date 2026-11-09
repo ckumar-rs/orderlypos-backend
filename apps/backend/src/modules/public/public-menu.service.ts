@@ -290,6 +290,7 @@ export class PublicMenuService {
     items: CartItemDto[],
     guestName: string,
     requestId?: string,
+    phone?: string,
   ) {
     const table = await this.resolveTable(qrToken);
     const branchId = table.floor.branchId;
@@ -299,6 +300,38 @@ export class PublicMenuService {
     if (requestId) {
       const replay = await this.ordersService.beginRequest(branchId, requestId, items);
       if (replay) return this.ordersService.getOrder(branchId, replay);
+    }
+
+    let customerId: string | undefined;
+    const phoneDigits = (phone ?? '').replace(/\D/g, '');
+    if (phoneDigits.length >= 8) {
+      const tail = phoneDigits.slice(-10);
+      const existing = await this.prisma.customer.findMany({
+        where: { branchId, phone: { contains: tail } },
+        take: 20,
+      });
+      const match = existing.find(
+        (row) => (row.phone ?? '').replace(/\D/g, '').slice(-10) === tail,
+      );
+      if (match) {
+        customerId = match.id;
+        if (guestName.trim() && !match.name) {
+          await this.prisma.customer.update({
+            where: { id: match.id },
+            data: { name: guestName.trim() },
+          });
+        }
+      } else {
+        const created = await this.prisma.customer.create({
+          data: {
+            branchId,
+            phone: phoneDigits,
+            name: guestName.trim() || null,
+            referralCode: await this.uniqueReferralCode(),
+          },
+        });
+        customerId = created.id;
+      }
     }
 
     // A guest who already ordered once this visit and scans again to add
@@ -313,6 +346,12 @@ export class PublicMenuService {
         enforceModifierLimits: true,
         websiteOnly: true,
       });
+      if (customerId && !openOrder.customerId) {
+        await this.prisma.order.update({
+          where: { id: openOrder.id },
+          data: { customerId },
+        });
+      }
       if (requestId) await this.ordersService.finishRequest(branchId, requestId, openOrder.id, items);
       return added;
     }
@@ -343,6 +382,7 @@ export class PublicMenuService {
         type: 'QR_ORDER',
         tableId: table.id,
         guestName,
+        ...(customerId ? { customerId } : {}),
         items,
       },
       { channel: 'ONLINE', clientRequestId: requestId },

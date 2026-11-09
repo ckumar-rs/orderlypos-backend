@@ -37,12 +37,19 @@ export class PublicMenuController {
   @Post('menu/:qrToken/order')
   @UsePipes(new ZodValidationPipe(publicOrderSchema))
   createOrder(@Param('qrToken') qrToken: string, @Body() body: unknown) {
-    const { items, guestName, requestId } = body as {
+    const { items, guestName, requestId, phone } = body as {
       items: never;
       guestName: string;
       requestId?: string;
+      phone?: string;
     };
-    return this.publicMenuService.createOrder(qrToken, items, guestName, requestId);
+    return this.publicMenuService.createOrder(
+      qrToken,
+      items,
+      guestName,
+      requestId,
+      phone,
+    );
   }
 
   @Get('menu/:qrToken/reorder')
@@ -61,7 +68,7 @@ export class PublicMenuController {
   createRequest(@Param('qrToken') qrToken: string, @Body() body: unknown) {
     return this.publicMenuService.createRequest(
       qrToken,
-      (body as { type: 'WAITER' | 'BILL' }).type,
+      (body as { type: 'WAITER' | 'BILL' | 'PAID_CLAIM' | 'COD' }).type,
     );
   }
 }
